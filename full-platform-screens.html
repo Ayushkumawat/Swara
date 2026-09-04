@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Swara — Full platform screens</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --void:#0A0E1A; --panel:#121828; --panel-2:#161E32;
+    --violet:#7C6CF6; --cyan:#3FE0C5; --amber:#F5A62B; --coral:#FF6B6B;
+    --text-1:#F3F5FA; --text-2:#9AA3B8; --text-3:#5C6478;
+    --glass-bg:rgba(255,255,255,0.045); --glass-bg-strong:rgba(255,255,255,0.07);
+    --glass-border:rgba(255,255,255,0.09);
+    --radius-lg:22px; --radius-md:14px; --radius-sm:9px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{ background:var(--void); color:var(--text-1); font-family:'Inter',sans-serif; min-height:100vh; overflow-x:hidden; position:relative; }
+  .glow{ position:fixed; border-radius:50%; filter:blur(110px); z-index:0; pointer-events:none; }
+  .glow-1{ width:640px; height:640px; top:-220px; left:-160px; background:radial-gradient(circle, rgba(124,108,246,0.30), transparent 70%); }
+  .glow-2{ width:560px; height:560px; top:280px; right:-200px; background:radial-gradient(circle, rgba(63,224,197,0.20), transparent 70%); }
+  .glow-3{ width:520px; height:520px; bottom:-260px; left:38%; background:radial-gradient(circle, rgba(245,166,43,0.13), transparent 70%); }
+  .app{ position:relative; z-index:1; display:flex; min-height:100vh; }
+
+  .sidebar{ width:238px; flex-shrink:0; padding:20px 12px; display:flex; flex-direction:column; gap:20px;
+    background:rgba(255,255,255,0.02); border-right:1px solid var(--glass-border); backdrop-filter:blur(30px);
+    max-height:100vh; overflow-y:auto; position:sticky; top:0; }
+  .brand{ display:flex; align-items:center; gap:10px; padding:4px 8px 10px; }
+  .brand-mark{ width:32px;height:32px;border-radius:9px; background:linear-gradient(135deg, var(--violet), var(--cyan));
+    display:flex;align-items:center;justify-content:center; font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:15px; color:#0A0E1A; }
+  .brand-name{ font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:16px; }
+  .brand-sub{ font-size:10.5px; color:var(--text-3); margin-top:-2px; }
+  .nav-group-label{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.08em; color:var(--text-3); padding:0 12px; margin-bottom:5px; }
+  .nav{ display:flex; flex-direction:column; gap:2px; margin-bottom:14px; }
+  .nav-item{ display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:var(--radius-sm);
+    font-size:13.5px; color:var(--text-2); font-weight:500; cursor:pointer; user-select:none; }
+  .nav-item svg{ width:17px; height:17px; flex-shrink:0; opacity:0.85; }
+  .nav-item:hover{ background:var(--glass-bg); }
+  .nav-item.active{ background:var(--glass-bg-strong); color:var(--text-1); border:1px solid var(--glass-border); }
+  .nav-item.active svg{ color:var(--cyan); opacity:1; }
+  .nav-item .badge{ margin-left:auto; font-size:10px; font-family:'JetBrains Mono',monospace; background:rgba(255,107,107,0.16);
+    color:var(--coral); padding:1px 7px; border-radius:999px; border:1px solid rgba(255,107,107,0.25); }
+
+  .main{ flex:1; min-width:0; padding:22px 30px 50px; }
+  .topbar{ display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; gap:20px; }
+  .crumbs{ font-size:13px; color:var(--text-3); }
+  .crumbs span{ color:var(--text-1); }
+  .search{ display:flex; align-items:center; gap:8px; width:300px; padding:9px 13px; background:var(--glass-bg);
+    border:1px solid var(--glass-border); border-radius:999px; color:var(--text-3); font-size:13px; backdrop-filter:blur(20px); }
+  .search svg{ width:15px; height:15px; opacity:0.7; }
+  .top-actions{ display:flex; align-items:center; gap:12px; }
+  .icon-btn{ width:34px; height:34px; border-radius:10px; background:var(--glass-bg); border:1px solid var(--glass-border);
+    display:flex; align-items:center; justify-content:center; position:relative; backdrop-filter:blur(20px); }
+  .icon-btn svg{ width:16px; height:16px; color:var(--text-2); }
+  .avatar{ width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg, var(--amber), var(--coral));
+    display:flex; align-items:center; justify-content:center; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:12px; color:#1a0e08; }
+
+  .page-head{ display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:20px; flex-wrap:wrap; gap:12px; }
+  .page-head h1{ font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:23px; }
+  .page-head p{ color:var(--text-2); font-size:13px; margin-top:4px; }
+  .cta-row{ display:flex; gap:10px; }
+  .btn{ display:flex; align-items:center; gap:7px; font-size:13px; font-weight:500; padding:9px 15px; border-radius:11px; cursor:pointer; white-space:nowrap; }
+  .btn svg{ width:14px; height:14px; }
+  .btn-primary{ background:linear-gradient(135deg, var(--violet), var(--cyan)); color:#0A0E1A; font-weight:600; }
+  .btn-ghost{ background:var(--glass-bg); border:1px solid var(--glass-border); color:var(--text-1); backdrop-filter:blur(20px); }
+  .btn-sm{ padding:6px 11px; font-size:12px; }
+
+  .card{ border-radius:var(--radius-lg); background:var(--glass-bg); border:1px solid var(--glass-border); backdrop-filter:blur(24px); padding:18px 20px; }
+  .card-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:15px; gap:10px; flex-wrap:wrap; }
+  .card-head h3{ font-family:'Space Grotesk',sans-serif; font-size:14.5px; font-weight:600; }
+  .card-head .sub{ font-size:11.5px; color:var(--text-3); margin-top:2px; }
+  .link{ font-size:12px; color:var(--cyan); font-weight:500; cursor:pointer; }
+
+  .row{ display:grid; gap:14px; margin-bottom:14px; }
+  .row.split{ grid-template-columns:1.5fr 1fr; }
+  .row.split-r{ grid-template-columns:1fr 1.5fr; }
+  .row.thirds{ grid-template-columns:repeat(3,1fr); }
+  .row.metrics4{ grid-template-columns:repeat(4,1fr); }
+  .row.metrics5{ grid-template-columns:repeat(5,1fr); }
+
+  .metric-card{ padding:16px 18px; border-radius:var(--radius-lg); background:var(--glass-bg); border:1px solid var(--glass-border); backdrop-filter:blur(24px); }
+  .metric-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .metric-icon{ width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; }
+  .metric-icon svg{ width:15px; height:15px; }
+  .metric-icon.violet{ background:rgba(124,108,246,0.16); } .metric-icon.violet svg{ color:var(--violet); }
+  .metric-icon.cyan{ background:rgba(63,224,197,0.14); } .metric-icon.cyan svg{ color:var(--cyan); }
+  .metric-icon.amber{ background:rgba(245,166,43,0.14); } .metric-icon.amber svg{ color:var(--amber); }
+  .metric-icon.coral{ background:rgba(255,107,107,0.14); } .metric-icon.coral svg{ color:var(--coral); }
+  .metric-trend{ font-size:11px; font-family:'JetBrains Mono',monospace; color:var(--cyan); }
+  .metric-trend.down{ color:var(--coral); }
+  .metric-val{ font-family:'Space Grotesk',sans-serif; font-size:24px; font-weight:600; margin-bottom:2px; }
+  .metric-label{ font-size:12px; color:var(--text-2); }
+
+  .pill{ font-size:10.5px; padding:2px 9px; border-radius:999px; border:1px solid; display:inline-flex; align-items:center; gap:4px; font-weight:500; }
+  .pill.v{ background:rgba(124,108,246,0.14); color:var(--violet); border-color:rgba(124,108,246,0.24); }
+  .pill.c{ background:rgba(63,224,197,0.14); color:var(--cyan); border-color:rgba(63,224,197,0.24); }
+  .pill.a{ background:rgba(245,166,43,0.14); color:var(--amber); border-color:rgba(245,166,43,0.24); }
+  .pill.r{ background:rgba(255,107,107,0.14); color:var(--coral); border-color:rgba(255,107,107,0.24); }
+  .pill.g{ background:rgba(255,255,255,0.06); color:var(--text-2); border-color:var(--glass-border); }
+
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-3); font-weight:500; padding:0 10px 10px; border-bottom:1px solid var(--glass-border); }
+  td{ padding:11px 10px; border-bottom:1px solid rgba(255,255,255,0.04); color:var(--text-1); }
+  tr:last-child td{ border-bottom:none; }
+  .mono{ font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-2); }
+
+  .list-item{ display:flex; align-items:center; gap:11px; padding:10px 0; border-bottom:1px solid rgba(255,255,255,0.05); }
+  .list-item:last-child{ border-bottom:none; padding-bottom:0; }
+  .dot{ width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .dot.cyan{ background:var(--cyan); box-shadow:0 0 0 3px rgba(63,224,197,0.18); }
+  .dot.amber{ background:var(--amber); box-shadow:0 0 0 3px rgba(245,166,43,0.18); }
+  .dot.coral{ background:var(--coral); box-shadow:0 0 0 3px rgba(255,107,107,0.18); }
+  .dot.gray{ background:var(--text-3); }
+
+  .wave{ display:flex; align-items:center; gap:2px; height:16px; }
+  .wave span{ width:2.5px; border-radius:2px; background:var(--cyan); opacity:0.8; }
+
+  .kbn{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .kbn-col h4{ font-size:12px; font-weight:600; color:var(--text-2); margin-bottom:10px; display:flex; justify-content:space-between; }
+  .kbn-card{ background:var(--glass-bg-strong); border:1px solid var(--glass-border); border-radius:var(--radius-md); padding:12px; margin-bottom:10px; }
+  .kbn-card .t{ font-size:12.5px; font-weight:500; margin-bottom:6px; line-height:1.4; }
+  .kbn-card .m{ font-size:11px; color:var(--text-3); font-family:'JetBrains Mono',monospace; display:flex; justify-content:space-between; align-items:center; }
+
+  .cal{ display:grid; grid-template-columns:repeat(7,1fr); gap:6px; }
+  .cal .dh{ font-size:11px; color:var(--text-3); text-align:center; padding-bottom:6px; }
+  .cal .dc{ aspect-ratio:1/0.85; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid var(--glass-border); padding:6px; font-size:11px; color:var(--text-2); position:relative; }
+  .cal .dc.today{ border-color:var(--cyan); }
+  .cal .dc .n{ font-family:'JetBrains Mono',monospace; }
+  .cal .ev{ margin-top:4px; font-size:9.5px; padding:2px 5px; border-radius:5px; background:rgba(124,108,246,0.18); color:var(--violet); }
+
+  .toggle{ width:36px; height:20px; border-radius:999px; background:rgba(255,255,255,0.08); border:1px solid var(--glass-border); position:relative; flex-shrink:0; }
+  .toggle.on{ background:linear-gradient(90deg, var(--violet), var(--cyan)); }
+  .toggle .knob{ width:14px; height:14px; border-radius:50%; background:#fff; position:absolute; top:2px; left:3px; }
+  .toggle.on .knob{ left:19px; }
+
+  .slider{ -webkit-appearance:none; width:100%; height:5px; border-radius:999px; background:rgba(255,255,255,0.08); }
+  .slider::-webkit-slider-thumb{ -webkit-appearance:none; width:15px; height:15px; border-radius:50%; background:var(--cyan); border:2px solid var(--void); }
+
+  .tabbar{ display:flex; gap:4px; padding:4px; background:var(--glass-bg); border:1px solid var(--glass-border); border-radius:12px; width:fit-content; margin-bottom:18px; }
+  .tab{ padding:7px 15px; font-size:12.5px; font-weight:500; border-radius:9px; color:var(--text-2); cursor:pointer; }
+  .tab.active{ background:var(--glass-bg-strong); color:var(--text-1); }
+
+  .int-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .int-card{ background:var(--glass-bg); border:1px solid var(--glass-border); border-radius:var(--radius-md); padding:14px; text-align:center; }
+  .int-icon{ width:36px; height:36px; border-radius:10px; background:var(--glass-bg-strong); margin:0 auto 10px; display:flex; align-items:center; justify-content:center; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13px; }
+  .int-card .n{ font-size:12.5px; font-weight:500; margin-bottom:3px; }
+  .int-card .s{ font-size:10.5px; color:var(--text-3); }
+
+  .flow-canvas{ background:rgba(255,255,255,0.02); border:1px solid var(--glass-border); border-radius:var(--radius-lg); padding:30px; min-height:360px; position:relative; }
+  .fnode{ background:var(--glass-bg-strong); border:1px solid var(--glass-border); border-radius:var(--radius-md); padding:12px 14px; width:170px; position:absolute; }
+  .fnode .k{ font-size:9.5px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-3); margin-bottom:4px; }
+  .fnode .t{ font-size:12.5px; font-weight:500; }
+  .flow-canvas svg.wire{ position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
+  .agent-card{ display:flex; align-items:center; gap:11px; padding:12px; border-radius:var(--radius-md); background:var(--glass-bg); border:1px solid var(--glass-border); margin-bottom:8px; }
+  .agent-avatar{ width:36px; height:36px; border-radius:10px; background:linear-gradient(135deg, var(--violet), var(--cyan)); display:flex; align-items:center; justify-content:center; font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13px; color:#0A0E1A; flex-shrink:0; }
+  .agent-info{ flex:1; min-width:0; }
+  .agent-info .n{ font-size:13px; font-weight:500; }
+  .agent-info .s{ font-size:11px; color:var(--text-3); margin-top:1px; }
+
+  .timeline{ position:relative; padding-left:20px; }
+  .timeline::before{ content:''; position:absolute; left:5px; top:4px; bottom:4px; width:1px; background:var(--glass-border); }
+  .tl-item{ position:relative; padding-bottom:18px; }
+  .tl-item:last-child{ padding-bottom:0; }
+  .tl-item::before{ content:''; position:absolute; left:-20px; top:3px; width:9px; height:9px; border-radius:50%; background:var(--cyan); border:2px solid var(--void); }
+  .tl-item .h{ font-size:12.5px; font-weight:500; }
+  .tl-item .m{ font-size:11px; color:var(--text-3); margin-top:2px; font-family:'JetBrains Mono',monospace; }
+
+  .voice-card{ background:var(--glass-bg); border:1px solid var(--glass-border); border-radius:var(--radius-md); padding:14px; }
+  .voice-card .row2{ display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .play-btn{ width:30px; height:30px; border-radius:50%; background:linear-gradient(135deg, var(--violet), var(--cyan)); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .play-btn svg{ width:12px; height:12px; color:#0A0E1A; }
+
+  .screen{ display:none; }
+  .screen.active{ display:block; }
+
+  @media (max-width:1150px){
+    .row.metrics4, .row.metrics5{ grid-template-columns:repeat(2,1fr); }
+    .row.split, .row.split-r, .row.thirds{ grid-template-columns:1fr; }
+    .kbn{ grid-template-columns:repeat(2,1fr); }
+    .int-grid{ grid-template-columns:repeat(2,1fr); }
+    .sidebar{ display:none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="glow glow-1"></div><div class="glow glow-2"></div><div class="glow glow-3"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">S</div>
+      <div><div class="brand-name">Swara</div><div class="brand-sub">Voice AI console</div></div>
+    </div>
+
+    <div>
+      <div class="nav-group-label">Workspace</div>
+      <div class="nav">
+        <div class="nav-item active" data-s="overview" onclick="go('overview')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>Overview</div>
+        <div class="nav-item" data-s="agents" onclick="go('agents')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="3.2"/><path d="M5 21c0-4 3-6.5 7-6.5s7 2.5 7 6.5"/></svg>Agents &amp; flows</div>
+        <div class="nav-item" data-s="campaigns" onclick="go('campaigns')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6h16M4 12h10M4 18h13"/><circle cx="19" cy="12" r="1.6"/></svg>Campaigns</div>
+        <div class="nav-item" data-s="live" onclick="go('live')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 17l4-8 4 5 3-7 4 6 3-4"/></svg>Live calls<span class="badge">24</span></div>
+        <div class="nav-item" data-s="analytics" onclick="go('analytics')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>Analytics</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="nav-group-label">Operations</div>
+      <div class="nav">
+        <div class="nav-item" data-s="bookings" onclick="go('bookings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>Bookings</div>
+        <div class="nav-item" data-s="complaints" onclick="go('complaints')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2 3 7v6c0 5 4 8 9 9 5-1 9-4 9-9V7z"/><path d="M12 8v5M12 16.5h.01"/></svg>Complaints<span class="badge">6</span></div>
+        <div class="nav-item" data-s="customer360" onclick="go('customer360')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>Customer 360</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="nav-group-label">Voice &amp; telephony</div>
+      <div class="nav">
+        <div class="nav-item" data-s="voice" onclick="go('voice')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 18V6l8 4-8 4"/><circle cx="12" cy="12" r="9"/></svg>Voice studio</div>
+        <div class="nav-item" data-s="numbers" onclick="go('numbers')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14.5 3.5 12 6 6 12l-2.5 6L10 15l6-6 2.5-2.5-4-3z"/><path d="M17 9l-2-2"/></svg>Numbers &amp; SIP</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="nav-group-label">Platform</div>
+      <div class="nav">
+        <div class="nav-item" data-s="integrations" onclick="go('integrations')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Integrations</div>
+        <div class="nav-item" data-s="settings" onclick="go('settings')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1 1.55V21a2 2 0 01-4 0v-.09a1.7 1.7 0 00-1-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1H3a2 2 0 010-4h.09a1.7 1.7 0 001.55-1 1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H9a1.7 1.7 0 001-1.55V3a2 2 0 014 0v.09a1.7 1.7 0 001 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V9a1.7 1.7 0 001.55 1H21a2 2 0 010 4h-.09a1.7 1.7 0 00-1.55 1z"/></svg>Settings</div>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="crumbs">Workspace / <span id="crumb-label">Overview</span></div>
+      <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>Search agents, calls, customers…</div>
+      <div class="top-actions">
+        <div class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg></div>
+        <div class="avatar">RS</div>
+      </div>
+    </div>
+
+    <!-- OVERVIEW -->
+    <section class="screen active" id="overview">
+      <div class="page-head"><div><h1>Good afternoon, Rohan</h1><p>Here's how your agents are performing today, 25 Aug</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">New campaign</div><div class="btn btn-primary">New agent</div></div></div>
+      <div class="row metrics4">
+        <div class="metric-card"><div class="metric-top"><div class="metric-icon violet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 16.9v3a2 2 0 01-2.2 2 19.8 19.8 0 01-8.6-3 19.5 19.5 0 01-6-6 19.8 19.8 0 01-3-8.7A2 2 0 014.1 2h3a2 2 0 012 1.7c.1.9.3 1.8.6 2.7a2 2 0 01-.4 2.1L8 9.9a16 16 0 006 6l1.4-1.4a2 2 0 012.1-.4c.9.3 1.8.5 2.7.6a2 2 0 011.8 2.2z"/></svg></div><div class="metric-trend">+18%</div></div><div class="metric-val">2,847</div><div class="metric-label">Calls handled today</div></div>
+        <div class="metric-card"><div class="metric-top"><div class="metric-icon cyan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div><div class="metric-trend">+6%</div></div><div class="metric-val">4,120</div><div class="metric-label">Minutes used this cycle</div></div>
+        <div class="metric-card"><div class="metric-top"><div class="metric-icon amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div><div class="metric-trend">+2.1%</div></div><div class="metric-val">91.4%</div><div class="metric-label">Resolution rate</div></div>
+        <div class="metric-card"><div class="metric-top"><div class="metric-icon coral"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2 3 7v6c0 5 4 8 9 9 5-1 9-4 9-9V7z"/></svg></div><div class="metric-trend down">-3</div></div><div class="metric-val">6</div><div class="metric-label">Open complaints</div></div>
+      </div>
+      <div class="row split">
+        <div class="card"><div class="card-head"><div><h3>Call volume</h3><div class="sub">Last 7 days</div></div><div class="link">Analytics →</div></div>
+          <div style="display:flex;align-items:flex-end;gap:10px;height:140px;">
+            <div style="flex:1;height:52%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+            <div style="flex:1;height:68%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+            <div style="flex:1;height:44%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+            <div style="flex:1;height:78%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+            <div style="flex:1;height:61%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+            <div style="flex:1;height:95%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--cyan),rgba(63,224,197,.25))"></div>
+            <div style="flex:1;height:58%;border-radius:7px 7px 3px 3px;background:linear-gradient(180deg,var(--violet),rgba(124,108,246,.25))"></div>
+          </div>
+        </div>
+        <div class="card"><div class="card-head"><div><h3>Live calls</h3><div class="sub">24 active</div></div><div class="link">Monitor →</div></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">+91 98•• •• 2214</div><div style="font-size:11px;color:var(--text-3);font-family:'JetBrains Mono',monospace">Order status · 01:24</div></div><span class="pill v">Hindi</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">+91 87•• •• 0091</div><div style="font-size:11px;color:var(--text-3);font-family:'JetBrains Mono',monospace">Delivery reschedule · 00:47</div></div><span class="pill v">Tamil</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">+91 90•• •• 5527</div><div style="font-size:11px;color:var(--text-3);font-family:'JetBrains Mono',monospace">Sales enquiry · 02:03</div></div><span class="pill v">Hinglish</span></div>
+        </div>
+      </div>
+      <div class="card" style="background:linear-gradient(120deg, rgba(124,108,246,.14), rgba(63,224,197,.08));display:flex;align-items:center;gap:12px;">
+        <div style="width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--violet),var(--cyan));display:flex;align-items:center;justify-content:center;flex-shrink:0"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#0A0E1A" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg></div>
+        <div style="font-size:13px;color:var(--text-2)">Ask the copilot to build or edit a flow — <b style="color:var(--text-1)">"add a Tamil greeting to the delivery-reschedule agent"</b></div>
+        <div class="link" style="margin-left:auto">Open copilot →</div>
+      </div>
+    </section>
+
+    <!-- AGENTS & FLOWS -->
+    <section class="screen" id="agents">
+      <div class="page-head"><div><h1>Agents &amp; flows</h1><p>Build, test, and publish voice agents — no-code or full graph control</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Templates</div><div class="btn btn-primary">New agent</div></div></div>
+      <div class="tabbar"><div class="tab active">Flow builder</div><div class="tab">Single prompt</div><div class="tab">Knowledge base</div><div class="tab">Test &amp; simulate</div><div class="tab">Versions</div></div>
+      <div class="row split-r">
+        <div class="card">
+          <div class="card-head"><h3>Your agents</h3></div>
+          <div class="agent-card"><div class="agent-avatar">DR</div><div class="agent-info"><div class="n">Delivery reschedule</div><div class="s">Hindi, Tamil, English · Live</div></div><span class="pill c">Live</span></div>
+          <div class="agent-card"><div class="agent-avatar">OS</div><div class="agent-info"><div class="n">Order status lookup</div><div class="s">5 languages · Live</div></div><span class="pill c">Live</span></div>
+          <div class="agent-card"><div class="agent-avatar">LQ</div><div class="agent-info"><div class="n">Lead qualification</div><div class="s">Hinglish · Draft</div></div><span class="pill g">Draft</span></div>
+          <div class="agent-card"><div class="agent-avatar">GR</div><div class="agent-info"><div class="n">Grievance intake</div><div class="s">All languages · Live</div></div><span class="pill c">Live</span></div>
+          <div class="agent-card"><div class="agent-avatar">AB</div><div class="agent-info"><div class="n">Appointment booking</div><div class="s">English · Testing</div></div><span class="pill a">Testing</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div><h3>Delivery reschedule — flow</h3><div class="sub">Node-graph mode · autosaved 2 min ago</div></div>
+            <div class="cta-row"><div class="btn btn-ghost btn-sm">Test call</div><div class="btn btn-primary btn-sm">Publish</div></div></div>
+          <div class="flow-canvas">
+            <svg class="wire"><line x1="180" y1="55" x2="230" y2="55" stroke="rgba(124,108,246,0.4)" stroke-width="1.5"/><line x1="380" y1="55" x2="230" y2="150" stroke="rgba(63,224,197,0.4)" stroke-width="1.5"/><line x1="380" y1="55" x2="430" y2="220" stroke="rgba(255,107,107,0.4)" stroke-width="1.5"/></svg>
+            <div class="fnode" style="top:20px;left:10px;"><div class="k">Start</div><div class="t">Greeting + language detect</div></div>
+            <div class="fnode" style="top:20px;left:230px;"><div class="k">Intent</div><div class="t">Identify reason for call</div></div>
+            <div class="fnode" style="top:120px;left:60px;"><div class="k">Data pull</div><div class="t">Fetch live order status</div></div>
+            <div class="fnode" style="top:190px;left:280px;"><div class="k">Branch</div><div class="t">Reschedule / cancel / confirm</div></div>
+            <div class="fnode" style="top:190px;left:490px;background:rgba(255,107,107,0.1);border-color:rgba(255,107,107,0.3)"><div class="k">Escalate</div><div class="t">Transfer to human + context</div></div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px;align-items:center;background:var(--glass-bg);border:1px solid var(--glass-border);border-radius:12px;padding:10px 14px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+            <span style="font-size:12.5px;color:var(--text-2);flex:1">Tell the copilot what to change — e.g. "confirm spelling of the address before booking"</span>
+            <div class="btn btn-ghost btn-sm">Ask copilot</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CAMPAIGNS -->
+    <section class="screen" id="campaigns">
+      <div class="page-head"><div><h1>Campaigns</h1><p>Outbound calling — sales, reminders, collections, surveys</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Upload contacts</div><div class="btn btn-primary">New campaign</div></div></div>
+      <div class="row metrics4">
+        <div class="metric-card"><div class="metric-val">4</div><div class="metric-label">Active campaigns</div></div>
+        <div class="metric-card"><div class="metric-val">38.2%</div><div class="metric-label">Connect rate</div></div>
+        <div class="metric-card"><div class="metric-val">12,410</div><div class="metric-label">Contacts queued</div></div>
+        <div class="metric-card"><div class="metric-val">180</div><div class="metric-label">Max concurrency</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Campaigns</h3><div class="link">+ New</div></div>
+        <table>
+          <tr><th>Name</th><th>Agent</th><th>Number series</th><th>Contacts</th><th>Connect rate</th><th>Status</th></tr>
+          <tr><td>Diwali sale outreach</td><td>Lead qualification</td><td class="mono">140 promo</td><td class="mono">6,200</td><td class="mono">41%</td><td><span class="pill c">Running</span></td></tr>
+          <tr><td>COD payment reminders</td><td>Order status</td><td class="mono">160 service</td><td class="mono">2,850</td><td class="mono">57%</td><td><span class="pill c">Running</span></td></tr>
+          <tr><td>Delivery failure follow-up</td><td>Delivery reschedule</td><td class="mono">160 service</td><td class="mono">1,940</td><td class="mono">33%</td><td><span class="pill a">Paused</span></td></tr>
+          <tr><td>Post-delivery CSAT survey</td><td>Feedback agent</td><td class="mono">160 service</td><td class="mono">1,420</td><td class="mono">29%</td><td><span class="pill g">Scheduled</span></td></tr>
+        </table>
+      </div>
+      <div class="row split" style="margin-top:14px;">
+        <div class="card"><div class="card-head"><h3>DND / DLT scrub status</h3></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1;font-size:13px">DLT entity + templates approved</div><span class="pill c">Active</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1;font-size:13px">National DND registry synced</div><span class="pill c">Synced 4h ago</span></div>
+          <div class="list-item"><div class="dot amber"></div><div style="flex:1;font-size:13px">312 numbers on DND — auto-excluded</div><span class="pill a">Excluded</span></div>
+        </div>
+        <div class="card"><div class="card-head"><h3>Retry logic</h3></div>
+          <div style="font-size:12.5px;color:var(--text-2);margin-bottom:12px;">No-answer calls retry automatically with backoff</div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Retry attempts</div><span class="mono">3</span></div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Gap between retries</div><span class="mono">45 min</span></div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Quiet hours (no calls)</div><span class="mono">9pm–9am</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LIVE CALLS -->
+    <section class="screen" id="live">
+      <div class="page-head"><div><h1>Live calls</h1><p>24 active · real-time monitoring, listen-in, and transfer</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Filter</div></div></div>
+      <div class="tabbar"><div class="tab active">All (24)</div><div class="tab">Frustrated (3)</div><div class="tab">Sales (9)</div><div class="tab">Support (12)</div></div>
+      <div class="row thirds">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span class="mono" style="font-size:12px">+91 98•• •• 2214</span><div class="dot cyan"></div></div>
+          <div style="font-size:12.5px;color:var(--text-2);margin-bottom:10px;">Delivery reschedule · Hindi · 01:24</div>
+          <div class="wave" style="height:20px;margin-bottom:12px;"><span style="height:8px"></span><span style="height:16px"></span><span style="height:6px"></span><span style="height:18px"></span><span style="height:10px"></span><span style="height:14px"></span><span style="height:7px"></span></div>
+          <div style="display:flex;gap:8px;"><div class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Listen</div><div class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Transfer</div></div>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span class="mono" style="font-size:12px">+91 87•• •• 0091</span><div class="dot coral"></div></div>
+          <div style="font-size:12.5px;color:var(--text-2);margin-bottom:10px;">Complaint · Tamil · 03:12 · sentiment dropping</div>
+          <div class="wave" style="height:20px;margin-bottom:12px;"><span style="height:14px;background:var(--coral)"></span><span style="height:6px;background:var(--coral)"></span><span style="height:18px;background:var(--coral)"></span><span style="height:9px;background:var(--coral)"></span><span style="height:15px;background:var(--coral)"></span><span style="height:7px;background:var(--coral)"></span><span style="height:12px;background:var(--coral)"></span></div>
+          <div style="display:flex;gap:8px;"><div class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Listen</div><div class="btn btn-primary btn-sm" style="flex:1;justify-content:center">Take over</div></div>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><span class="mono" style="font-size:12px">+91 90•• •• 5527</span><div class="dot cyan"></div></div>
+          <div style="font-size:12.5px;color:var(--text-2);margin-bottom:10px;">Sales enquiry · Hinglish · 02:03</div>
+          <div class="wave" style="height:20px;margin-bottom:12px;"><span style="height:9px"></span><span style="height:15px"></span><span style="height:7px"></span><span style="height:11px"></span><span style="height:17px"></span><span style="height:6px"></span><span style="height:13px"></span></div>
+          <div style="display:flex;gap:8px;"><div class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Listen</div><div class="btn btn-ghost btn-sm" style="flex:1;justify-content:center">Transfer</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ANALYTICS -->
+    <section class="screen" id="analytics">
+      <div class="page-head"><div><h1>Analytics</h1><p>Call quality, cost, and outcome reporting</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Date range</div><div class="btn btn-ghost">Export</div></div></div>
+      <div class="row metrics5">
+        <div class="metric-card"><div class="metric-val">2:14</div><div class="metric-label">Avg handle time</div></div>
+        <div class="metric-card"><div class="metric-val">78%</div><div class="metric-label">Containment rate</div></div>
+        <div class="metric-card"><div class="metric-val">22%</div><div class="metric-label">Escalation rate</div></div>
+        <div class="metric-card"><div class="metric-val">4.4</div><div class="metric-label">CSAT (of 5)</div></div>
+        <div class="metric-card"><div class="metric-val">₹3.20</div><div class="metric-label">Cost per call</div></div>
+      </div>
+      <div class="row split">
+        <div class="card"><div class="card-head"><h3>Automated call scoring</h3><div class="sub">Rubric-based QA, no manual review needed</div></div>
+          <table>
+            <tr><th>Call</th><th>Agent</th><th>Score</th><th>Flag</th></tr>
+            <tr><td class="mono">#48213</td><td>Grievance intake</td><td class="mono">62/100</td><td><span class="pill r">Tone</span></td></tr>
+            <tr><td class="mono">#48211</td><td>Order status</td><td class="mono">94/100</td><td><span class="pill c">Clean</span></td></tr>
+            <tr><td class="mono">#48208</td><td>Lead qualification</td><td class="mono">88/100</td><td><span class="pill c">Clean</span></td></tr>
+            <tr><td class="mono">#48201</td><td>Delivery reschedule</td><td class="mono">71/100</td><td><span class="pill a">Slow resolve</span></td></tr>
+          </table>
+        </div>
+        <div class="card"><div class="card-head"><h3>CSAT trend</h3><div class="sub">30 days</div></div>
+          <div style="display:flex;align-items:flex-end;gap:6px;height:120px;">
+            <div style="flex:1;height:60%;background:rgba(124,108,246,.5);border-radius:4px"></div><div style="flex:1;height:65%;background:rgba(124,108,246,.5);border-radius:4px"></div><div style="flex:1;height:58%;background:rgba(124,108,246,.5);border-radius:4px"></div><div style="flex:1;height:72%;background:rgba(124,108,246,.5);border-radius:4px"></div><div style="flex:1;height:80%;background:rgba(63,224,197,.6);border-radius:4px"></div><div style="flex:1;height:76%;background:rgba(63,224,197,.6);border-radius:4px"></div><div style="flex:1;height:88%;background:rgba(63,224,197,.6);border-radius:4px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BOOKINGS -->
+    <section class="screen" id="bookings">
+      <div class="page-head"><div><h1>Bookings</h1><p>Live calendar availability, confirmations, and no-show risk</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Sync calendar</div><div class="btn btn-primary">New booking</div></div></div>
+      <div class="row split-r">
+        <div class="card"><div class="card-head"><h3>Upcoming</h3></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Priya Menon</div><div style="font-size:11px;color:var(--text-3)">Home delivery slot · 2:00pm</div></div><span class="pill c">Low risk</span></div>
+          <div class="list-item"><div class="dot amber"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Arjun Patel</div><div style="font-size:11px;color:var(--text-3)">Install appointment · 3:30pm</div></div><span class="pill a">No-show risk 34%</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Neha Sharma</div><div style="font-size:11px;color:var(--text-3)">Return pickup · 5:00pm</div></div><span class="pill c">Low risk</span></div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text-3)">No-show risk is scored from past reschedule history and confirmation response</div>
+        </div>
+        <div class="card"><div class="card-head"><h3>This week</h3></div>
+          <div class="cal">
+            <div class="dh">Mon</div><div class="dh">Tue</div><div class="dh">Wed</div><div class="dh">Thu</div><div class="dh">Fri</div><div class="dh">Sat</div><div class="dh">Sun</div>
+            <div class="dc"><div class="n">24</div></div>
+            <div class="dc today"><div class="n">25</div><div class="ev">3 slots</div></div>
+            <div class="dc"><div class="n">26</div><div class="ev">5 slots</div></div>
+            <div class="dc"><div class="n">27</div><div class="ev">2 slots</div></div>
+            <div class="dc"><div class="n">28</div><div class="ev">6 slots</div></div>
+            <div class="dc"><div class="n">29</div></div>
+            <div class="dc"><div class="n">30</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPLAINTS -->
+    <section class="screen" id="complaints">
+      <div class="page-head"><div><h1>Complaints &amp; grievances</h1><p>Detected in real time, tracked to SLA, exportable for audit</p></div>
+        <div class="cta-row"><div class="btn btn-ghost">Export audit log</div></div></div>
+      <div class="kbn">
+        <div class="kbn-col"><h4>New (4)</h4>
+          <div class="kbn-card"><div class="t">Wrong item delivered, refund requested</div><div class="m"><span>#48213</span><span class="pill r">High</span></div></div>
+          <div class="kbn-card"><div class="t">Late delivery, third occurrence</div><div class="m"><span>#48209</span><span class="pill a">Med</span></div></div>
+        </div>
+        <div class="kbn-col"><h4>In progress (5)</h4>
+          <div class="kbn-card"><div class="t">Repeat caller, same order</div><div class="m"><span>#48190</span><span class="pill a">Med</span></div></div>
+          <div class="kbn-card"><div class="t">Pincode not serviceable</div><div class="m"><span>#48177</span><span class="pill a">Med</span></div></div>
+        </div>
+        <div class="kbn-col"><h4>Escalated (2)</h4>
+          <div class="kbn-card"><div class="t">Damaged product, video proof shared</div><div class="m"><span>#48150</span><span class="pill r">High</span></div></div>
+        </div>
+        <div class="kbn-col"><h4>Resolved (18)</h4>
+          <div class="kbn-card"><div class="t">Refund processed and confirmed</div><div class="m"><span>#48122</span><span class="pill c">Closed</span></div></div>
+          <div class="kbn-card"><div class="t">Reschedule confirmed by customer</div><div class="m"><span>#48119</span><span class="pill c">Closed</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CUSTOMER 360 -->
+    <section class="screen" id="customer360">
+      <div class="page-head"><div><h1>Customer 360</h1><p>Every channel, one timeline — call, WhatsApp, SMS, and order history together</p></div></div>
+      <div class="row split">
+        <div class="card"><div class="card-head"><h3>Conversations</h3></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Priya Menon</div><div style="font-size:11px;color:var(--text-3)">Call · 12 min ago</div></div></div>
+          <div class="list-item"><div class="dot gray"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Arjun Patel</div><div style="font-size:11px;color:var(--text-3)">WhatsApp · 40 min ago</div></div></div>
+          <div class="list-item"><div class="dot gray"></div><div style="flex:1"><div style="font-size:13px;font-weight:500">Neha Sharma</div><div style="font-size:11px;color:var(--text-3)">SMS · 1h ago</div></div></div>
+        </div>
+        <div class="card"><div class="card-head"><div><h3>Priya Menon</h3><div class="sub">+91 98•• •• 2214 · 7 orders · customer since Feb</div></div><span class="pill c">Positive sentiment</span></div>
+          <div class="timeline">
+            <div class="tl-item"><div class="h">Call — delivery reschedule agreed</div><div class="m">Today, 2:12pm · Hindi</div></div>
+            <div class="tl-item"><div class="h">WhatsApp — delivery delay notice sent</div><div class="m">Today, 11:40am</div></div>
+            <div class="tl-item"><div class="h">Order #48213 placed — ₹2,340</div><div class="m">Yesterday, 6:02pm</div></div>
+            <div class="tl-item"><div class="h">Call — order status enquiry</div><div class="m">3 days ago · Hindi</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VOICE STUDIO -->
+    <section class="screen" id="voice">
+      <div class="page-head"><div><h1>Voice studio</h1><p>Pick, tune, or clone voices per agent and language</p></div>
+        <div class="cta-row"><div class="btn btn-primary">Clone a voice</div></div></div>
+      <div class="row thirds">
+        <div class="voice-card"><div class="row2"><div class="play-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div><div><div style="font-size:13px;font-weight:500">Ananya — warm, Hindi</div><div style="font-size:11px;color:var(--text-3)">Default for support</div></div></div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">Pace</div><input type="range" class="slider" value="55"></div>
+        <div class="voice-card"><div class="row2"><div class="play-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div><div><div style="font-size:13px;font-weight:500">Karthik — brisk, Tamil</div><div style="font-size:11px;color:var(--text-3)">Default for sales</div></div></div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">Formality</div><input type="range" class="slider" value="40"></div>
+        <div class="voice-card"><div class="row2"><div class="play-btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div><div><div style="font-size:13px;font-weight:500">Meera — calm, Hinglish</div><div style="font-size:11px;color:var(--text-3)">Default for grievances</div></div></div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:4px;">Pace</div><input type="range" class="slider" value="35"></div>
+      </div>
+      <div class="card" style="margin-top:14px;"><div class="card-head"><div><h3>A/B script test</h3><div class="sub">Delivery reschedule — greeting variant</div></div></div>
+        <div class="row split">
+          <div style="padding:12px;border-radius:12px;background:var(--glass-bg);border:1px solid var(--glass-border)"><div class="pill v" style="margin-bottom:8px">Variant A</div><div style="font-size:12.5px;color:var(--text-2)">"Namaste, calling about your delivery today."</div><div style="margin-top:10px;font-size:12px" class="mono">Resolve rate: 74%</div></div>
+          <div style="padding:12px;border-radius:12px;background:var(--glass-bg);border:1px solid var(--glass-border)"><div class="pill c" style="margin-bottom:8px">Variant B — winning</div><div style="font-size:12.5px;color:var(--text-2)">"Hi Priya, quick update on today's delivery."</div><div style="margin-top:10px;font-size:12px" class="mono">Resolve rate: 89%</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- NUMBERS & SIP -->
+    <section class="screen" id="numbers">
+      <div class="page-head"><div><h1>Numbers &amp; SIP</h1><p>Telephony, provisioning, and call security</p></div>
+        <div class="cta-row"><div class="btn btn-primary">Add number</div></div></div>
+      <div class="row split">
+        <div class="card"><div class="card-head"><h3>Numbers</h3></div>
+          <table>
+            <tr><th>Number</th><th>Series</th><th>Assigned</th><th>Pickup rate</th></tr>
+            <tr><td class="mono">+91 79724 xxxxx</td><td>140 promo</td><td>Lead qualification</td><td class="mono">76%</td></tr>
+            <tr><td class="mono">+91 92040 xxxxx</td><td>160 service</td><td>Order status</td><td class="mono">81%</td></tr>
+            <tr><td class="mono">+91 88002 xxxxx</td><td>160 service</td><td>Grievance intake</td><td class="mono">79%</td></tr>
+          </table>
+        </div>
+        <div class="card"><div class="card-head"><h3>Call security</h3></div>
+          <div class="list-item"><div style="flex:1;font-size:13px">STIR/SHAKEN attestation</div><div class="toggle on"><div class="knob"></div></div></div>
+          <div class="list-item"><div style="flex:1;font-size:13px">Voice biometric caller verification</div><div class="toggle on"><div class="knob"></div></div></div>
+          <div class="list-item"><div style="flex:1;font-size:13px">Spam / robocall pattern detection</div><div class="toggle on"><div class="knob"></div></div></div>
+          <div class="list-item"><div style="flex:1;font-size:13px">Auto-block reported numbers</div><div class="toggle"><div class="knob"></div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INTEGRATIONS -->
+    <section class="screen" id="integrations">
+      <div class="page-head"><div><h1>Integrations</h1><p>Connect once, use across every agent</p></div></div>
+      <div class="int-grid">
+        <div class="int-card"><div class="int-icon">SF</div><div class="n">Salesforce</div><div class="s">Connected</div></div>
+        <div class="int-card"><div class="int-icon">HS</div><div class="n">HubSpot</div><div class="s">Connect</div></div>
+        <div class="int-card"><div class="int-icon">Zo</div><div class="n">Zoho CRM</div><div class="s">Connected</div></div>
+        <div class="int-card"><div class="int-icon">Sh</div><div class="n">Shopify</div><div class="s">Connected</div></div>
+        <div class="int-card"><div class="int-icon">Wo</div><div class="n">WooCommerce</div><div class="s">Connect</div></div>
+        <div class="int-card"><div class="int-icon">Sr</div><div class="n">Shiprocket</div><div class="s">Connected</div></div>
+        <div class="int-card"><div class="int-icon">Wa</div><div class="n">WhatsApp Business</div><div class="s">Connect</div></div>
+        <div class="int-card"><div class="int-icon">Ca</div><div class="n">Google Calendar</div><div class="s">Connected</div></div>
+        <div class="int-card"><div class="int-icon">Wh</div><div class="n">Webhooks</div><div class="s">3 active</div></div>
+        <div class="int-card"><div class="int-icon">Ap</div><div class="n">REST API</div><div class="s">2 keys active</div></div>
+        <div class="int-card"><div class="int-icon">MC</div><div class="n">MCP server</div><div class="s">Connect Claude/GPT</div></div>
+        <div class="int-card"><div class="int-icon">Sl</div><div class="n">Slack alerts</div><div class="s">Connect</div></div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="settings">
+      <div class="page-head"><div><h1>Settings</h1><p>Billing, compliance, team, and API access</p></div></div>
+      <div class="tabbar"><div class="tab active">Billing</div><div class="tab">Compliance</div><div class="tab">Team &amp; roles</div><div class="tab">API keys</div></div>
+      <div class="row split">
+        <div class="card"><div class="card-head"><h3>Usage this cycle</h3></div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-size:26px;font-weight:600;margin-bottom:4px;">4,120 <span style="font-size:14px;color:var(--text-3);font-weight:400;">/ 6,000 min</span></div>
+          <div style="height:8px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden;margin-bottom:14px;"><div style="height:100%;width:69%;background:linear-gradient(90deg,var(--violet),var(--cyan))"></div></div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Growth plan</div><span class="mono">₹24,999/mo</span></div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Overage rate</div><span class="mono">₹5/min</span></div>
+          <div class="list-item"><div style="font-size:13px;flex:1">Next invoice</div><span class="mono">1 Sep</span></div>
+        </div>
+        <div class="card"><div class="card-head"><h3>Compliance status</h3></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1;font-size:13px">DLT entity + templates</div><span class="pill c">Approved</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1;font-size:13px">GST invoicing</div><span class="pill c">Active</span></div>
+          <div class="list-item"><div class="dot cyan"></div><div style="flex:1;font-size:13px">Consent capture on all flows</div><span class="pill c">Enabled</span></div>
+          <div class="list-item"><div class="dot amber"></div><div style="flex:1;font-size:13px">Data residency — India</div><span class="pill a">Review</span></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+function go(id){
+  document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+  document.querySelector('.nav-item[data-s="'+id+'"]').classList.add('active');
+  document.getElementById('crumb-label').textContent = document.querySelector('.nav-item[data-s="'+id+'"]').textContent.trim();
+}
+</script>
+
+</body>
+</html>
