@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   Clock3,
@@ -17,15 +18,20 @@ import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead, MetricCard } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { ProgressBar, Slider } from "@/components/ui/controls";
+import { Field, ProgressBar, Slider, TextInput } from "@/components/ui/controls";
 import { MetricSkeleton, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono, Table, Td, Th, Tr } from "@/components/ui/table";
 import { LazyMount, NumberTicker, Reveal, Stagger, StaggerItem } from "@/components/motion/primitives";
-import { useCampaigns, useScrubStatus } from "@/lib/api/hooks";
+import { IS_MOCK, mutations } from "@/lib/api/client";
+import { qk, useAgents, useCampaignContacts, useCampaigns, useScrubStatus } from "@/lib/api/hooks";
+import type { Campaign } from "@/lib/api/schemas";
 import { relativeTime } from "@/lib/utils";
 
 export default function CampaignsPage() {
   const campaigns = useCampaigns();
+  const qc = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const list = campaigns.data ?? [];
   const running = list.filter((c) => c.status === "running");
@@ -40,11 +46,11 @@ export default function CampaignsPage() {
         sub="Outbound calling — sales, reminders, collections, surveys"
         actions={
           <>
-            <Button variant="ghost" onClick={() => toast("Upload a CSV to import contacts")}>
+            <Button variant="ghost" onClick={() => setSelectedId(list[0]?.id ?? null)}>
               <Upload className="size-3.5" />
-              Upload contacts
+              Add contacts
             </Button>
-            <Button variant="primary" onClick={() => toast.success("New campaign draft created")}>
+            <Button variant="primary" onClick={() => setCreating(true)}>
               <Plus className="size-3.5" />
               New campaign
             </Button>
@@ -167,21 +173,31 @@ export default function CampaignsPage() {
                         </Pill>
                       </Td>
                       <Td align="right">
-                        <Button
-                          size="sm"
-                          variant="subtle"
-                          onClick={() =>
-                            toast.success(
-                              c.status === "running" ? `Paused ${c.name}` : `Resumed ${c.name}`,
-                            )
-                          }
-                        >
-                          {c.status === "running" ? (
-                            <Pause className="size-3" />
-                          ) : (
-                            <Play className="size-3" />
-                          )}
-                        </Button>
+                        <div className="flex justify-end gap-1.5">
+                          <Button size="sm" variant="subtle" onClick={() => setSelectedId(c.id)}>
+                            Contacts
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="subtle"
+                            onClick={async () => {
+                              const next = c.status === "running" ? "paused" : "running";
+                              try {
+                                if (!IS_MOCK) await mutations.updateCampaign(c.id, next);
+                                toast.success(next === "paused" ? `Paused ${c.name}` : `Started ${c.name}`);
+                                void qc.invalidateQueries({ queryKey: qk.campaigns });
+                              } catch {
+                                toast.error("Could not update campaign");
+                              }
+                            }}
+                          >
+                            {c.status === "running" ? (
+                              <Pause className="size-3" />
+                            ) : (
+                              <Play className="size-3" />
+                            )}
+                          </Button>
+                        </div>
                       </Td>
                     </Tr>
                   ))}
@@ -192,13 +208,181 @@ export default function CampaignsPage() {
         </Card>
       </Reveal>
 
+      {selectedId ? <ContactsCard campaignId={selectedId} campaigns={list} /> : null}
+
       <LazyMount>
         <div className="grid gap-3.5 lg:grid-cols-2">
           <ScrubCard />
           <RetryCard />
         </div>
       </LazyMount>
+
+      {creating ? (
+        <NewCampaignModal
+          onClose={() => setCreating(false)}
+          onCreated={(id) => {
+            setCreating(false);
+            setSelectedId(id);
+            void qc.invalidateQueries({ queryKey: qk.campaigns });
+          }}
+        />
+      ) : null}
     </>
+  );
+}
+
+function NewCampaignModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const agents = useAgents();
+  const [name, setName] = useState("");
+  const [agentId, setAgentId] = useState("");
+  const [series, setSeries] = useState<"140" | "160">("160");
+
+  useEffect(() => {
+    if (!agentId && agents.data?.[0]?.id) setAgentId(agents.data[0].id);
+  }, [agentId, agents.data]);
+
+  const create = async () => {
+    if (!name.trim() || !agentId) {
+      toast.error("Name the campaign and pick an agent");
+      return;
+    }
+    try {
+      const res = IS_MOCK
+        ? { id: "cp_mock" }
+        : await mutations.createCampaign({ name: name.trim(), agentId, series });
+      toast.success("Campaign drafted — add contacts next");
+      onCreated(res.id);
+    } catch {
+      toast.error("Could not create campaign");
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-void/70 p-4 backdrop-blur-sm">
+      <div className="glass-strong w-[min(460px,100%)] rounded-[22px] p-5">
+        <h2 className="mb-1 font-[family-name:var(--font-display)] text-[16px] font-semibold text-t1">
+          New campaign
+        </h2>
+        <p className="mb-4 text-[12px] text-t3">
+          140 is promotional, 160 is transactional. The series is enforced before the first dial.
+        </p>
+        <div className="space-y-3">
+          <Field label="Name">
+            <TextInput value={name} onChange={setName} placeholder="COD reminders — west" />
+          </Field>
+          <Field label="Agent">
+            <select
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
+            >
+              {(agents.data ?? []).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Number series">
+            <select
+              value={series}
+              onChange={(e) => setSeries(e.target.value as "140" | "160")}
+              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
+            >
+              <option value="160">160 — service / transactional</option>
+              <option value="140">140 — promotional</option>
+            </select>
+          </Field>
+        </div>
+        <div className="mt-4 flex gap-2">
+          <Button variant="subtle" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void create()}>
+            Create draft
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContactsCard({ campaignId, campaigns }: { campaignId: string; campaigns: Campaign[] }) {
+  const query = useCampaignContacts(campaignId);
+  const qc = useQueryClient();
+  const [paste, setPaste] = useState("");
+  const campaign = campaigns.find((c) => c.id === campaignId);
+
+  const add = async () => {
+    const contacts = paste
+      .split(/[\n,;]+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [phone, name] = line.split(/\s+/);
+        return { phone, name };
+      });
+    if (!contacts.length) {
+      toast.error("Paste numbers, one per line — optional name after the number");
+      return;
+    }
+    try {
+      if (!IS_MOCK) await mutations.addContacts(campaignId, contacts);
+      toast.success(`Queued ${contacts.length} contacts`);
+      setPaste("");
+      void qc.invalidateQueries({ queryKey: qk.campaignContacts(campaignId) });
+      void qc.invalidateQueries({ queryKey: qk.campaigns });
+    } catch {
+      toast.error("Could not add contacts");
+    }
+  };
+
+  return (
+    <Reveal className="mb-3.5">
+      <Card interactive={false}>
+        <CardHead
+          title={`Contacts — ${campaign?.name ?? "campaign"}`}
+          sub="Paste numbers. DND-registered rows stay queued until scrub excludes them."
+        />
+        <Field label="Add numbers" hint="One per line: +9198… Priya">
+          <textarea
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+            rows={4}
+            className="glass w-full resize-y rounded-[14px] p-3 font-[family-name:var(--font-mono)] text-[12.5px] text-t1 outline-none"
+            placeholder={"+919876543210 Priya Menon\n+918765432109"}
+          />
+        </Field>
+        <Button className="mt-3 mb-4" variant="primary" onClick={() => void add()}>
+          <Plus className="size-3.5" />
+          Queue contacts
+        </Button>
+        <QueryBoundary query={query} skeleton={<RowsSkeleton rows={3} />}>
+          {(rows) =>
+            rows.length === 0 ? (
+              <p className="text-[12.5px] text-t3">No contacts yet.</p>
+            ) : (
+              rows.map((c) => (
+                <ListRow key={c.id}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] text-t1">{c.name || c.phone}</span>
+                    <Mono className="text-[11px]">{c.phone}</Mono>
+                  </span>
+                  {c.dnd ? <Pill tone="amber">DND</Pill> : null}
+                  <Pill tone={c.status === "queued" ? "grey" : "cyan"}>{c.status}</Pill>
+                </ListRow>
+              ))
+            )
+          }
+        </QueryBoundary>
+      </Card>
+    </Reveal>
   );
 }
 

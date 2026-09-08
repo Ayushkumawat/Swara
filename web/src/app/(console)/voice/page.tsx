@@ -3,17 +3,19 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import { Info, Mic, Pause, Play, Trophy } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { ProgressBar, Slider } from "@/components/ui/controls";
+import { Field, ProgressBar, Slider } from "@/components/ui/controls";
 import { CardSkeleton, QueryBoundary } from "@/components/ui/feedback";
 import { Waveform } from "@/components/ui/live";
 import { Mono } from "@/components/ui/table";
 import { LazyMount, Reveal } from "@/components/motion/primitives";
-import { useScriptTests, useVoices } from "@/lib/api/hooks";
+import { IS_MOCK, mutations } from "@/lib/api/client";
+import { qk, useScriptTests, useVoices } from "@/lib/api/hooks";
 import { LANGUAGE_LABEL, type ScriptTest, type Voice } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +28,7 @@ export default function VoiceStudioPage() {
     <>
       <PageHead
         title="Voice studio"
-        sub="Pick, tune, or clone voices per agent and language"
+        sub="Each voice is a person — gender, cadence and a prompt template you can edit and test"
         actions={
           <Button variant="primary" onClick={() => toast("Record 40 seconds to clone a voice")}>
             <Mic className="size-3.5" />
@@ -39,9 +41,9 @@ export default function VoiceStudioPage() {
         <div className="flex gap-3 rounded-[18px] border border-violet/20 bg-violet/[0.07] px-4 py-3.5">
           <Info className="mt-px size-4 shrink-0 text-violet" strokeWidth={1.7} />
           <p className="text-[12.5px] leading-relaxed text-t2">
-            These sliders map to parameters the self-hosted speech-to-speech model actually exposes.
-            Anything the model cannot tune is deliberately absent rather than shown as a control
-            that quietly does nothing.
+            Sliders map to what the model actually exposes. The talking style — gendered Hindi
+            verbs, pace of a grievance vs a sales follow-up — lives in the prompt template.
+            Language is never picked here: the voice follows the caller.
           </p>
         </div>
       </Reveal>
@@ -97,10 +99,19 @@ function VoiceCard({
   playing: boolean;
   onPlay: () => void;
 }) {
+  const qc = useQueryClient();
   const [pace, setPace] = useState(voice.pace);
   const [formality, setFormality] = useState(voice.formality);
   const [warmth, setWarmth] = useState(voice.warmth);
-  const dirty = pace !== voice.pace || formality !== voice.formality || warmth !== voice.warmth;
+  const [personaName, setPersonaName] = useState(voice.personaName ?? voice.name);
+  const [promptTemplate, setPromptTemplate] = useState(voice.promptTemplate ?? "");
+  const [openPrompt, setOpenPrompt] = useState(false);
+  const dirty =
+    pace !== voice.pace ||
+    formality !== voice.formality ||
+    warmth !== voice.warmth ||
+    personaName !== (voice.personaName ?? voice.name) ||
+    promptTemplate !== (voice.promptTemplate ?? "");
 
   return (
     <motion.div
@@ -123,11 +134,14 @@ function VoiceCard({
           </button>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[13px] font-medium text-t1">{voice.name}</span>
+              <span className="truncate text-[13px] font-medium text-t1">
+                {voice.liveName ? `${voice.liveName} · ${personaName}` : voice.name}
+              </span>
               {voice.cloned ? <Pill tone="violet">Cloned</Pill> : null}
             </div>
             <div className="mt-0.5 truncate text-[11px] text-t3">
-              {LANGUAGE_LABEL[voice.language]} · {voice.descriptor}
+              {voice.gender} · {voice.style ?? voice.descriptor} · follows caller
+              {LANGUAGE_LABEL[voice.language] ? ` (${LANGUAGE_LABEL[voice.language]} home)` : ""}
             </div>
           </div>
         </div>
@@ -150,8 +164,25 @@ function VoiceCard({
           <Mono className="text-[10.5px]">
             {voice.latencyMs}ms first token
           </Mono>
+          <Button size="sm" variant="subtle" onClick={() => setOpenPrompt((v) => !v)}>
+            {openPrompt ? "Hide craft" : "Edit craft"}
+          </Button>
           {dirty ? (
-            <Button size="sm" variant="primary" onClick={() => toast.success(`${voice.name} saved`)}>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={async () => {
+                try {
+                  if (!IS_MOCK) {
+                    await mutations.updateVoice(voice.id, { pace, formality, warmth, personaName, promptTemplate });
+                  }
+                  toast.success(`${personaName} saved`);
+                  void qc.invalidateQueries({ queryKey: qk.voices });
+                } catch {
+                  toast.error("Could not save voice");
+                }
+              }}
+            >
               Save
             </Button>
           ) : (
@@ -160,6 +191,29 @@ function VoiceCard({
             </span>
           )}
         </div>
+
+        {openPrompt ? (
+          <div className="mt-3 space-y-2.5 border-t border-hairline pt-3">
+            <Field label="Spoken name">
+              <input
+                value={personaName}
+                onChange={(e) => setPersonaName(e.target.value)}
+                className="glass w-full rounded-[11px] px-3 py-2 text-[13px] text-t1 outline-none"
+              />
+            </Field>
+            <Field
+              label="Talking style"
+              hint="Gendered verbs and register are load-bearing. This is what a test call hears."
+            >
+              <textarea
+                value={promptTemplate}
+                onChange={(e) => setPromptTemplate(e.target.value)}
+                rows={6}
+                className="glass w-full resize-y rounded-[12px] p-3 font-[family-name:var(--font-mono)] text-[11.5px] leading-relaxed text-t1 outline-none"
+              />
+            </Field>
+          </div>
+        ) : null}
       </Card>
     </motion.div>
   );

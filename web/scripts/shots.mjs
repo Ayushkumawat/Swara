@@ -29,6 +29,7 @@ const ROUTES = [
   ["/bookings", "bookings", true],
   ["/complaints", "complaints", true],
   ["/customers", "customers", true],
+  ["/queue", "queue", true],
   ["/voice", "voice", true],
   ["/numbers", "numbers", true],
   ["/integrations", "integrations", true],
@@ -49,6 +50,24 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--disable-gpu", "--force-color-profile=srgb"],
   defaultViewport: { width: 1600, height: 1000, deviceScaleFactor: 1 },
 });
+
+// Console routes need a session when the real backend is on. Logging in
+// through the API drops the cookie into the browser context; if the backend
+// is off (mock mode) this fails silently and the pages work anyway.
+{
+  const page = await browser.newPage();
+  await page.goto(`${BASE}/login`, { waitUntil: "domcontentloaded", timeout: 20_000 });
+  const result = await page.evaluate(async () => {
+    const res = await fetch("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: "demo@swara.in", password: "swara-demo" }),
+    }).catch(() => null);
+    return res?.ok ?? false;
+  });
+  console.log(result ? "signed in as demo@swara.in" : "no backend session (mock mode?)");
+  await page.close();
+}
 
 for (const [path, name, fullPage] of targets) {
   const page = await browser.newPage();

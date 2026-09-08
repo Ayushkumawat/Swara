@@ -11,8 +11,23 @@ npm run build
 npm run start
 ```
 
-Runs entirely on a demo dataset out of the box. No backend needed to click
-through every screen.
+Ships with its own backend. With `NEXT_PUBLIC_API_BASE_URL=/api/v1` in
+`.env.local` (the default in `.env.example`), the route handlers under
+`src/app/api/v1` serve every screen from SQLite — auth and sessions, calls
+with per-call token/cost metering, complaints routed to department queues,
+usage and invoices computed from raw usage events. The database self-seeds a
+demo workspace on first run; sign in as `demo@swara.in` / `swara-demo`, or as
+a department desk like `cleaning@swara.in` to see the scoped action queue.
+Details in [`../docs/backend.md`](../docs/backend.md). Unset the variable and
+the console falls back to the in-bundle demo dataset with no auth.
+
+The voice agent talks to Gemini Live for real. Set `GEMINI_API_KEY` in
+`.env.local` (see `.env.example`) and "Test call" on the Agents screen opens
+an actual speech-to-speech session — mic in, agent voice out, interruption,
+and mid-call function calling: the agent looks up orders, registers complaints
+(with a real reference number that lands in a department's queue) and books
+slots against the backend while the caller is on the line. Architecture, model
+features and limits are in [`../docs/live-api.md`](../docs/live-api.md).
 
 ---
 
@@ -99,6 +114,7 @@ src/
     motion/          reveal, stagger, ticker, lazy-mount, ambient glows
   lib/
     api/             schemas (the contract), client (transport), hooks, fixtures
+    live/            Gemini Live session: config, personas, audio, reconnect
     nav.ts           navigation model, also feeds the command palette
     pricing.ts       single source for public and in-app pricing
 ```
@@ -157,5 +173,10 @@ marked here so nobody mistakes a convincing screen for a working feature:
   flow around it is real and won't change when a model goes behind it.
 - **Listen / take over / transfer** are UI affordances. The underlying
   SIP/RTP bridging is genuinely hard and needs architecture work early.
+- **Outbound dialling** — the agent conversation is real, but nothing places a
+  call to a phone number yet. That needs the telephony leg.
 - **Auth** navigates without authenticating.
 - **Mutations** are optimistic-only in demo mode.
+
+The voice agent is the exception: it is genuinely live, and the personas it runs
+are the ones in `src/lib/live/prompts.ts`.

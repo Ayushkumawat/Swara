@@ -8,19 +8,40 @@ import { Check } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, TextInput } from "@/components/ui/controls";
+import { IS_MOCK, mutations } from "@/lib/api/client";
 
 export default function SignupPage() {
   const router = useRouter();
-  const [form, setForm] = useState({ name: "", business: "", email: "", phone: "" });
+  const [form, setForm] = useState({ name: "", business: "", email: "", phone: "", password: "" });
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
-  const valid = form.name && form.business && form.email.includes("@");
+  const valid =
+    form.name && form.business && form.email.includes("@") && (IS_MOCK || form.password.length >= 8);
 
-  const submit = () => {
+  const submit = async () => {
     if (!valid) return;
     setBusy(true);
-    setTimeout(() => router.push("/onboarding"), 700);
+    setError(null);
+    if (IS_MOCK) {
+      setTimeout(() => router.push("/onboarding"), 700);
+      return;
+    }
+    try {
+      // Creates the org and signs the owner in; onboarding runs authenticated.
+      await mutations.signup(form.business, form.name, form.email, form.password);
+      router.push("/onboarding");
+      router.refresh();
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : "";
+      try {
+        setError((JSON.parse(raw) as { error?: string }).error ?? "Could not create workspace");
+      } catch {
+        setError(raw || "Could not create workspace");
+      }
+      setBusy(false);
+    }
   };
 
   return (
@@ -64,7 +85,23 @@ export default function SignupPage() {
             >
               <TextInput value={form.phone} onChange={set("phone")} placeholder="+91 98765 43210" />
             </Field>
+            {!IS_MOCK ? (
+              <Field label="Password" hint="At least 8 characters.">
+                <TextInput
+                  value={form.password}
+                  onChange={set("password")}
+                  type="password"
+                  placeholder="••••••••"
+                />
+              </Field>
+            ) : null}
           </div>
+
+          {error ? (
+            <p className="mt-3 rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-[12px] text-coral">
+              {error}
+            </p>
+          ) : null}
 
           <Button
             variant="primary"

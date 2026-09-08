@@ -1,22 +1,52 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import { motion } from "motion/react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, TextInput } from "@/components/ui/controls";
+import { IS_MOCK, mutations } from "@/lib/api/client";
 
 export default function LoginPage() {
+  return (
+    // useSearchParams needs a Suspense boundary during prerender.
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const params = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const submit = () => {
+  // Where the 401 redirect came from, so login lands back on the page the
+  // person was actually trying to reach. A department user deep-links to
+  // /queue, gets bounced here, signs in, and is on their queue.
+  const next = params.get("next") ?? "/overview";
+
+  const submit = async () => {
     setBusy(true);
-    setTimeout(() => router.push("/overview"), 600);
+    setError(null);
+    if (IS_MOCK) {
+      // Demo mode has no backend to check against.
+      setTimeout(() => router.push(next), 600);
+      return;
+    }
+    try {
+      await mutations.login(email, password);
+      router.push(next);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error && e.message ? parseError(e.message) : "Could not sign in");
+      setBusy(false);
+    }
   };
 
   return (
@@ -46,7 +76,21 @@ export default function LoginPage() {
           </Field>
         </div>
 
-        <Button variant="primary" full className="mt-6" disabled={busy} onClick={submit}>
+        {error ? (
+          <p className="mt-3 rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-[12px] text-coral">
+            {error}
+          </p>
+        ) : null}
+
+        {!IS_MOCK ? (
+          <p className="mt-3 text-[11px] text-t3">
+            Demo workspace: <span className="font-medium text-t2">demo@swara.in</span> /{" "}
+            <span className="font-medium text-t2">swara-demo</span> — or a department desk like{" "}
+            <span className="font-medium text-t2">cleaning@swara.in</span>
+          </p>
+        ) : null}
+
+        <Button variant="primary" full className="mt-4" disabled={busy} onClick={submit}>
           {busy ? "Signing in…" : "Sign in"}
         </Button>
 
@@ -56,7 +100,7 @@ export default function LoginPage() {
           <span className="h-px flex-1 bg-hairline" />
         </div>
 
-        <Button variant="ghost" full onClick={() => router.push("/overview")}>
+        <Button variant="ghost" full onClick={() => router.push(next)}>
           Continue with Google
         </Button>
 
@@ -69,4 +113,13 @@ export default function LoginPage() {
       </Card>
     </motion.div>
   );
+}
+
+/** API errors arrive as JSON strings; show the message, not the envelope. */
+function parseError(raw: string) {
+  try {
+    return (JSON.parse(raw) as { error?: string }).error ?? raw;
+  } catch {
+    return raw;
+  }
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
@@ -19,9 +20,12 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
 import { Field, ProgressBar, TextInput } from "@/components/ui/controls";
-import { Waveform } from "@/components/ui/live";
-import { LANGUAGE_LABEL, type Language } from "@/lib/api/schemas";
+import { IS_MOCK, mutations } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
+
+// The Gemini SDK plus the audio stack, needed only on the last step of the
+// wizard. Loading it up front would slow the step nobody has reached yet.
+const CallPanel = dynamic(() => import("@/components/live/call-panel").then((m) => m.CallPanel));
 
 /**
  * First-run wizard.
@@ -63,26 +67,42 @@ const TEMPLATES = [
   },
 ];
 
-const LANGUAGES: Language[] = ["hi", "en", "hinglish", "ta", "te", "mr", "bn", "kn", "ml", "gu"];
-
-const STEPS = ["Choose a template", "Pick languages", "Get a number", "Hear it work"];
+const STEPS = ["Choose a template", "How you work", "Get a number", "Hear it work"];
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [template, setTemplate] = useState<string | null>("order_status");
-  const [languages, setLanguages] = useState<Language[]>(["hi", "en", "hinglish"]);
+  const [hours, setHours] = useState("10:00-19:00 IST");
+  const [transferName, setTransferName] = useState("");
+  const [transferPhone, setTransferPhone] = useState("");
   const [numberChoice, setNumberChoice] = useState<"new" | "port">("new");
   const [testPhone, setTestPhone] = useState("+91 ");
   const [called, setCalled] = useState(false);
+  const [calling, setCalling] = useState(false);
 
   const canAdvance =
     (step === 0 && template) ||
-    (step === 1 && languages.length > 0) ||
+    step === 1 ||
     step === 2 ||
     (step === 3 && called);
 
-  const next = () => {
+  const next = async () => {
+    if (step === 1 && !IS_MOCK) {
+      try {
+        await mutations.savePlaybook({ hours, transferPolicy: transferName ? `Transfer to ${transferName}` : "" });
+        if (transferName && transferPhone) {
+          await mutations.saveTransfer({
+            name: transferName,
+            role: "On-call",
+            phone: transferPhone,
+            whenToUse: "Caller asked for a person, or the agent is stuck",
+          });
+        }
+      } catch {
+        // Wizard still advances — setup can be finished in the console.
+      }
+    }
     if (step < STEPS.length - 1) setStep(step + 1);
     else router.push("/overview");
   };
@@ -156,37 +176,24 @@ export default function OnboardingPage() {
               {step === 1 ? (
                 <>
                   <p className="mb-4 text-[13px] text-t2">
-                    The agent detects which of these the caller is speaking within the first second.
-                    Add as many as your customers actually use.
+                    Language is detected from speech — we never ask Hindi or English. What we do
+                    need is hours and, if you have one, the person a stuck call should reach.
                   </p>
-                  <div className="flex flex-wrap gap-2">
-                    {LANGUAGES.map((l) => {
-                      const on = languages.includes(l);
-                      return (
-                        <button
-                          key={l}
-                          onClick={() =>
-                            setLanguages((prev) =>
-                              on ? prev.filter((x) => x !== l) : [...prev, l],
-                            )
-                          }
-                          className={cn(
-                            "flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[12.5px] transition-colors",
-                            on
-                              ? "border-cyan/40 bg-cyan/[0.12] text-cyan"
-                              : "border-hairline text-t2 hover:text-t1",
-                          )}
-                        >
-                          {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
-                          {LANGUAGE_LABEL[l]}
-                        </button>
-                      );
-                    })}
+                  <div className="space-y-3">
+                    <Field label="Working hours">
+                      <TextInput value={hours} onChange={setHours} placeholder="10:00-19:00 IST" />
+                    </Field>
+                    <Field label="Transfer to (optional)">
+                      <TextInput value={transferName} onChange={setTransferName} placeholder="Priya Desai, support lead" />
+                    </Field>
+                    <Field label="Their phone">
+                      <TextInput value={transferPhone} onChange={setTransferPhone} placeholder="+91 98200 11122" />
+                    </Field>
                   </div>
                   <p className="mt-5 rounded-[12px] bg-white/[0.03] p-3 text-[11.5px] leading-relaxed text-t3">
-                    Adding a language costs nothing extra and does not slow the call down. Hinglish
-                    is worth keeping on even if you think your customers speak English — most
-                    code-switch without noticing.
+                    You can add departments, appointment types and a knowledge base later in
+                    Workspace setup. Without a transfer number the agent will take a callback
+                    instead of inventing a desk.
                   </p>
                 </>
               ) : null}
@@ -249,44 +256,57 @@ export default function OnboardingPage() {
               {step === 3 ? (
                 <>
                   <p className="mb-4 text-[13px] text-t2">
-                    Call yourself before any customer hears it. This runs the draft agent, not a
-                    recording.
+                    Hear it before any customer does. This runs the draft agent, not a recording —
+                    interrupt it, switch to Hindi mid-sentence, try to confuse it.
                   </p>
-                  <Field label="Call this number">
-                    <TextInput value={testPhone} onChange={setTestPhone} placeholder="+91 98765 43210" />
-                  </Field>
+
+                  {/* Browser first, because it works this second and needs no
+                      number, no DLT approval, and no waiting for a callback.
+                      The fastest possible path to "oh, it actually works". */}
                   <Button
                     variant="primary"
                     full
-                    className="mt-4"
-                    disabled={testPhone.trim().length < 8}
                     onClick={() => {
                       setCalled(true);
-                      toast.success("Calling you now", {
-                        description: "Answer and say “where is my order”.",
-                      });
+                      setCalling(true);
                     }}
                   >
                     <Headphones className="size-3.5" />
-                    {called ? "Call again" : "Call me now"}
+                    {called ? "Talk to it again" : "Talk to it now"}
                   </Button>
+                  <p className="mt-2 text-center text-[11px] text-t3">
+                    Uses your mic — headphones recommended
+                  </p>
 
-                  <AnimatePresence>
-                    {called ? (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        className="mt-4 overflow-hidden"
-                      >
-                        <div className="glass flex items-center gap-3 rounded-[14px] p-3.5">
-                          <Waveform bars={9} tone="cyan" height={20} />
-                          <span className="text-[12.5px] text-t2">
-                            Ringing your phone — the call is live
-                          </span>
-                        </div>
-                      </motion.div>
-                    ) : null}
-                  </AnimatePresence>
+                  <div className="mt-5 border-t border-hairline pt-4">
+                    <Field label="Or have it call your phone">
+                      <TextInput
+                        value={testPhone}
+                        onChange={setTestPhone}
+                        placeholder="+91 98765 43210"
+                      />
+                    </Field>
+                    <Button
+                      full
+                      className="mt-2.5"
+                      disabled={testPhone.trim().length < 8}
+                      onClick={() =>
+                        toast("Phone testing unlocks once your number is provisioned", {
+                          description: "The browser test above runs the same agent right now.",
+                        })
+                      }
+                    >
+                      Call me now
+                    </Button>
+                  </div>
+
+                  <CallPanel
+                    open={calling}
+                    onClose={() => setCalling(false)}
+                    agentId="ag_order"
+                    agentName="Order status lookup"
+                    languages={["hi", "en", "hinglish"]}
+                  />
                 </>
               ) : null}
             </motion.div>
@@ -304,7 +324,7 @@ export default function OnboardingPage() {
             variant="primary"
             className="ml-auto"
             disabled={!canAdvance}
-            onClick={next}
+            onClick={() => void next()}
           >
             {step === STEPS.length - 1 ? (
               <>
