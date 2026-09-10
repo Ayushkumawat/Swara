@@ -147,7 +147,7 @@ export default function AgentsPage() {
               <>
                 {tab === "flow" ? <FlowTab key={selected.id} agent={selected} /> : null}
                 {tab === "prompt" ? <PromptTab key={selected.id} agent={selected} /> : null}
-                {tab === "knowledge" ? <KnowledgeTab /> : null}
+                {tab === "knowledge" ? <KnowledgeTab key={selected.id} agent={selected} /> : null}
                 {tab === "test" ? (
                   <TestTab agent={selected} onStartCall={() => setCalling(true)} />
                 ) : null}
@@ -484,6 +484,8 @@ function FlowTab({ agent }: { agent: Agent }) {
   const [name, setName] = useState(agent.name);
   const moveTimer = useRef<number | null>(null);
   const nameTimer = useRef<number | null>(null);
+  const agentsQuery = useAgents();
+  const siblings = (agentsQuery.data ?? []).filter((a) => a.id !== agent.id);
 
   const persist = async (nextNodes: FlowNode[], nextEdges: FlowEdge[]) => {
     setNodes(nextNodes);
@@ -502,13 +504,21 @@ function FlowTab({ agent }: { agent: Agent }) {
   };
 
   const addNode = (kind: FlowNode["kind"]) => {
+    const labels: Partial<Record<FlowNode["kind"], string>> = {
+      collect: "Ask",
+      data_pull: "Look up",
+      book: "Book",
+      branch: "Branch",
+      escalate: "Transfer",
+      end: "Hang up",
+    };
     const node: FlowNode = {
       id: `n_${Date.now()}`,
       kind,
-      title: kind.replace("_", " "),
+      title: labels[kind] ?? kind.replace("_", " "),
       x: 80 + (nodes.length % 4) * 220,
       y: 80 + Math.floor(nodes.length / 4) * 140,
-      config: {},
+      config: kind === "escalate" ? { transferKind: "agent" } : kind === "data_pull" ? { tool: "search_knowledge" } : {},
     };
     const nextNodes = [...nodes, node];
     const nextEdges =
@@ -589,10 +599,28 @@ function FlowTab({ agent }: { agent: Agent }) {
           }}
         />
       </Field>
-      <div className="mb-3 mt-3 flex flex-wrap gap-1.5">
-        {(["collect", "say", "data_pull", "branch", "intent", "book", "escalate", "end"] as const).map((kind) => (
+      <p className="mb-3 rounded-[14px] border border-hairline bg-white/[0.03] px-3.5 py-3 text-[12.5px] leading-relaxed text-t2">
+        Each box is a real step the voice agent must take. Look-up calls{" "}
+        <span className="font-[family-name:var(--font-mono)] text-[11.5px] text-t1">lookup_order</span>{" "}
+        or knowledge search, Book calls{" "}
+        <span className="font-[family-name:var(--font-mono)] text-[11.5px] text-t1">book_slot</span>, Transfer
+        hands the caller to a human or another agent (that agent&apos;s knowledge, not this one), Hang up
+        says goodbye and closes the line. The canvas is compiled into the live prompt — skipping a tool
+        means the action did not happen.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {(
+          [
+            ["collect", "Ask"],
+            ["data_pull", "Look up"],
+            ["book", "Book"],
+            ["branch", "Branch"],
+            ["escalate", "Transfer"],
+            ["end", "Hang up"],
+          ] as const
+        ).map(([kind, label]) => (
           <Button key={kind} size="sm" variant="subtle" onClick={() => addNode(kind)}>
-            + {kind.replace("_", " ")}
+            + {label}
           </Button>
         ))}
       </div>
@@ -650,6 +678,107 @@ function FlowTab({ agent }: { agent: Agent }) {
                   }}
                 />
               </Field>
+              {selected.kind === "data_pull" ? (
+                <Field label="Tool this step must call" hint="If the model skips the tool, the fact does not exist.">
+                  <select
+                    value={String(selected.config?.tool ?? "search_knowledge")}
+                    onChange={(e) => {
+                      const next = nodes.map((n) =>
+                        n.id === selected.id
+                          ? { ...n, config: { ...n.config, tool: e.target.value } }
+                          : n,
+                      );
+                      void persist(next, edges);
+                    }}
+                    className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
+                  >
+                    <option value="lookup_order">Look up order</option>
+                    <option value="register_complaint">Register complaint</option>
+                    <option value="search_knowledge">Search this agent&apos;s knowledge</option>
+                  </select>
+                </Field>
+              ) : null}
+              {selected.kind === "escalate" ? (
+                <>
+                  <Field label="Hand off to">
+                    <select
+                      value={String(
+                        selected.config?.transferKind ??
+                          (selected.config?.targetAgentName ? "agent" : "human"),
+                      )}
+                      onChange={(e) => {
+                        const transferKind = e.target.value;
+                        const next = nodes.map((n) =>
+                          n.id === selected.id
+                            ? {
+                                ...n,
+                                config:
+                                  transferKind === "human"
+                                    ? { transferKind: "human" }
+                                    : { ...n.config, transferKind: "agent" },
+                              }
+                            : n,
+                        );
+                        void persist(next, edges);
+                      }}
+                      className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
+                    >
+                      <option value="agent">Another agent (their knowledge)</option>
+                      <option value="human">A human desk</option>
+                    </select>
+                  </Field>
+                  {String(selected.config?.transferKind ?? (selected.config?.targetAgentName ? "agent" : "human")) ===
+                  "agent" ? (
+                    <Field
+                      label="Which agent"
+                      hint={
+                        siblings.length === 0
+                          ? "Create another agent first — Setup → Swara will suggest the split."
+                          : "The caller is handed to that line and its knowledge base."
+                      }
+                    >
+                      <select
+                        value={String(selected.config?.targetAgentId ?? "")}
+                        onChange={(e) => {
+                          const sib = siblings.find((s) => s.id === e.target.value);
+                          const next = nodes.map((n) =>
+                            n.id === selected.id
+                              ? {
+                                  ...n,
+                                  title: sib ? `To ${sib.name}` : n.title,
+                                  config: {
+                                    transferKind: "agent",
+                                    targetAgentId: sib?.id,
+                                    targetAgentName: sib?.name,
+                                  },
+                                }
+                              : n,
+                          );
+                          void persist(next, edges);
+                        }}
+                        className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
+                      >
+                        <option value="">Pick an agent</option>
+                        {siblings.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} · {INTENT_LABEL[s.intent]}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                  ) : (
+                    <p className="text-[11.5px] text-t3">
+                      Uses desks from Workspace setup → Transfers. If that list is empty the agent
+                      takes a callback instead of inventing a person.
+                    </p>
+                  )}
+                </>
+              ) : null}
+              {selected.kind === "end" ? (
+                <p className="text-[11.5px] text-t3">
+                  Speaks a one-line goodbye, calls end_call, and the line closes.
+                </p>
+              ) : null}
               {selected.kind !== "start" ? (
                 <Button size="sm" variant="danger" onClick={() => removeNode(selected.id)}>
                   <Trash2 className="size-3.5" />
@@ -744,7 +873,7 @@ function PromptTab({ agent }: { agent: Agent }) {
       <div className="glass rounded-[14px] p-3.5">
         <div className="mb-2 text-[11.5px] font-medium text-t2">Tools this agent can call</div>
         <div className="flex flex-wrap gap-2">
-          {["lookup_order", "register_complaint", "book_slot", "search_knowledge", "transfer_to_human"].map(
+          {["lookup_order", "register_complaint", "book_slot", "search_knowledge", "transfer_to_human", "transfer_to_agent", "end_call"].map(
             (t) => (
               <Pill key={t} tone="violet">
                 <span className="font-[family-name:var(--font-mono)]">{t}</span>
@@ -753,14 +882,15 @@ function PromptTab({ agent }: { agent: Agent }) {
           )}
         </div>
         <p className="mt-2 text-[11px] text-t3">
-          Transfer and booking only work after you fill those desks in Workspace setup.
+          Transfer to another agent hands the caller to that line&apos;s knowledge. Hang-up is
+          end_call — not a suggestion. Desks and slots come from Workspace setup.
         </p>
       </div>
     </div>
   );
 }
 
-function KnowledgeTab() {
+function KnowledgeTab({ agent }: { agent: Agent }) {
   const query = useKnowledge();
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -772,8 +902,8 @@ function KnowledgeTab() {
       return;
     }
     try {
-      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text });
-      toast.success("Indexed");
+      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text, agentId: agent.id });
+      toast.success(`Indexed for ${agent.name}`);
       setName("");
       setText("");
       void qc.invalidateQueries({ queryKey: qk.knowledge });
@@ -786,9 +916,10 @@ function KnowledgeTab() {
     <div className="space-y-4">
       <div className="rounded-[18px] border border-dashed border-hairline bg-white/[0.02] p-6">
         <Upload className="mb-3 size-5 text-t3" strokeWidth={1.6} />
-        <p className="text-[13px] text-t1">Paste policy, fare or FAQ text</p>
-        <p className="mt-1 mb-3 text-[11.5px] text-t3">
-          Grounds answers in your own content. PDF parsing can wait — the search pipeline is already real.
+        <p className="text-[13px] text-t1">Paste policy, fare or FAQ text for {agent.name}</p>
+        <p className="mt-1 mb-3 text-[11.5px] leading-relaxed text-t3">
+          Search is scoped to this agent, plus any org-wide docs. That is how a bookings agent
+          stays out of order-status answers.
         </p>
         <Field label="Name">
           <TextInput value={name} onChange={setName} placeholder="Refund policy" />
@@ -821,6 +952,11 @@ function KnowledgeTab() {
                   <span className="block truncate text-[13px] text-t1">{d.name}</span>
                   <span className="text-[11px] text-t3">
                     {d.sizeLabel} · {d.chunks.toLocaleString("en-IN")} chunks
+                    {d.agentId === agent.id
+                      ? ` · ${agent.name}`
+                      : d.agentId
+                        ? " · another agent"
+                        : " · shared"}
                   </span>
                 </span>
                 <Pill tone={d.status === "indexed" ? "cyan" : d.status === "indexing" ? "amber" : "coral"}>

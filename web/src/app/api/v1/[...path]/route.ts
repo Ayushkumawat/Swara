@@ -7,6 +7,7 @@ import { finishCall } from "@/lib/server/pipeline";
 import { executeTool } from "@/lib/server/tools";
 import { ingestKnowledgeDoc } from "@/lib/server/ai";
 import * as ws from "@/lib/server/workspace";
+import { applyStoredPlan, coachReply, loadChat } from "@/lib/server/setup-coach";
 
 /**
  * The whole API surface in one router.
@@ -58,6 +59,7 @@ const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = 
   "setup/transfers": (u) => ws.transferTargets(u.orgId),
   "setup/appointments": (u) => ws.appointmentTypes(u.orgId),
   "setup/connectors": (u) => ws.connectors(u.orgId),
+  "setup/chat": (u) => loadSetupChat(u.orgId),
   "analytics": (u) => repo.analytics(u.orgId),
   "billing/usage": (u) => repo.usage(u.orgId),
   "billing/invoices": (u) => repo.invoices(u.orgId),
@@ -80,6 +82,16 @@ function publicPlaybook(orgId: string) {
     transferPolicy: p.transferPolicy,
     bookingPolicy: p.bookingPolicy,
     complaintSlaHours: p.complaintSlaHours,
+  };
+}
+
+function loadSetupChat(orgId: string) {
+  const chat = loadChat(orgId);
+  return {
+    messages: chat.messages,
+    facts: chat.facts,
+    plan: chat.plan,
+    appliedAt: chat.appliedAt,
   };
 }
 
@@ -126,6 +138,10 @@ const KnowledgeBody = z.object({
   /** Extracted text. Parsing PDFs/crawling URLs belongs in a worker later;
    *  the API takes text so the pipeline downstream is already real. */
   text: z.string().min(20).max(500_000),
+  agentId: z.string().nullable().optional(),
+});
+const SetupChatBody = z.object({
+  message: z.string().max(8000).optional(),
 });
 const CreateAgentBody = z.object({
   name: z.string().min(1).optional(),
@@ -251,7 +267,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     if (!user) return json({ error: "Not signed in" }, 401);
     const parsed = KnowledgeBody.safeParse(body);
     if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid document" }, 400);
-    const doc = await ingestKnowledgeDoc(user.orgId, parsed.data.name, parsed.data.kind, parsed.data.text);
+    const doc = await ingestKnowledgeDoc(
+      user.orgId,
+      parsed.data.name,
+      parsed.data.kind,
+      parsed.data.text,
+      parsed.data.agentId,
+    );
     return json(doc, 201);
   }
 
@@ -319,6 +341,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     const parsed = ConnectorBody.safeParse(body);
     if (!parsed.success) return json({ error: "Invalid connector" }, 400);
     return json(ws.upsertConnector(user.orgId, parsed.data));
+  }
+
+  if (key === "setup/chat") {
+    const parsed = SetupChatBody.safeParse(body);
+    if (!parsed.success) return json({ error: "message too long" }, 400);
+    const chat = await coachReply(user.orgId, parsed.data.message ?? "");
+    return json(chat);
+  }
+
+  if (key === "setup/chat/apply") {
+    const result = await applyStoredPlan(user.orgId);
+    if (!result.applied) return json(result, 400);
+    return json(result);
   }
 
   if (key === "campaigns") {
