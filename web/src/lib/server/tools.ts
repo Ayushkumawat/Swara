@@ -2,9 +2,7 @@ import "server-only";
 import { getDb } from "./db";
 import { classifyDepartment, searchKnowledge } from "./ai";
 import { createBooking, createComplaint } from "./repo";
-import { compileFlow } from "@/lib/agents/compile-flow";
 import { appointmentTypes, logToolInvocation, transferTargets } from "./workspace";
-import type { FlowEdge, FlowNode } from "@/lib/api/schemas";
 
 /**
  * The agent's hands.
@@ -53,22 +51,13 @@ async function runTool(
     case "book_slot":
       return bookSlot(orgId, args);
     case "search_knowledge": {
-      const agentId = agentIdForCall(orgId, callId);
-      const results = await searchKnowledge(orgId, String(args.query ?? ""), 4, agentId);
+      const results = await searchKnowledge(orgId, String(args.query ?? ""));
       return results.length
         ? { found: true, results: results.map((r) => ({ source: r.doc, text: r.content.slice(0, 500) })) }
-        : { found: false, note: "Nothing relevant in this agent's knowledge base. Say you don't have this detail and offer a follow-up. Do not guess." };
+        : { found: false, note: "Nothing relevant in the knowledge base. Say you don't have this detail and offer a follow-up. Do not guess." };
     }
     case "transfer_to_human":
       return transferHuman(orgId, args);
-    case "transfer_to_agent":
-      return transferAgent(orgId, callId, args);
-    case "end_call":
-      return { ended: true, hangup: true, reason: String(args.reason ?? "done"), note: "Stop speaking. The line will close." };
-    case "note_setup_answer":
-      return noteSetup(orgId, args);
-    case "apply_setup_plan":
-      return await applySetupFromCall(orgId);
     default:
       return { error: `Unknown tool ${name}` };
   }
@@ -225,71 +214,4 @@ function transferHuman(orgId: string, args: Record<string, unknown>) {
     reason: String(args.reason ?? ""),
     note: `Tell the caller you are connecting them to ${target.name}, ${target.role}. Do not read the full number unless they ask.`,
   };
-}
-
-function agentIdForCall(orgId: string, callId: string | null) {
-  if (!callId) return null;
-  const row = getDb()
-    .prepare("SELECT agent_id FROM calls WHERE id=? AND org_id=?")
-    .get(callId, orgId) as { agent_id: string | null } | undefined;
-  return row?.agent_id ?? null;
-}
-
-function transferAgent(orgId: string, callId: string | null, args: Record<string, unknown>) {
-  const asked = String(args.agent_name ?? "").trim().toLowerCase();
-  const rows = getDb()
-    .prepare("SELECT id, name, intent, prompt, nodes, edges FROM agents WHERE org_id=? AND status!='paused'")
-    .all(orgId) as { id: string; name: string; intent: string; prompt: string | null; nodes: string; edges: string }[];
-  const match =
-    rows.find((a) => a.name.toLowerCase() === asked || a.id.toLowerCase() === asked) ||
-    rows.find((a) => a.name.toLowerCase().includes(asked) || a.intent.toLowerCase().includes(asked));
-  if (!match) {
-    return {
-      error: "No matching agent. Stay on this line or take a callback. Do not invent a specialist.",
-    };
-  }
-
-  if (callId) {
-    getDb().prepare("UPDATE calls SET agent_id=?, agent_name=? WHERE id=? AND org_id=?").run(match.id, match.name, callId, orgId);
-  }
-
-  const docs = getDb()
-    .prepare(
-      "SELECT name FROM knowledge_docs WHERE org_id=? AND (agent_id=? OR agent_id IS NULL) LIMIT 8",
-    )
-    .all(orgId, match.id) as { name: string }[];
-
-  let nodes: FlowNode[] = [];
-  let edges: FlowEdge[] = [];
-  try {
-    nodes = JSON.parse(match.nodes || "[]") as FlowNode[];
-    edges = JSON.parse(match.edges || "[]") as FlowEdge[];
-  } catch {
-    /* keep empty */
-  }
-
-  return {
-    transferred: true,
-    become: match.name,
-    intent: match.intent,
-    role: match.prompt ?? `You now handle ${match.name}.`,
-    procedure: compileFlow(nodes, edges),
-    knowledge_docs: docs.map((d) => d.name),
-    reason: String(args.reason ?? ""),
-    note: `You ARE now ${match.name}. Do not mention the handoff again. Follow the procedure above. Search knowledge for this agent's topics. If they need something else, transfer again. When finished, say goodbye and call end_call.`,
-  };
-}
-
-function noteSetup(orgId: string, args: Record<string, unknown>) {
-  // Lazy import: setup-coach imports getDb too.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { recordFact } = require("./setup-coach") as typeof import("./setup-coach");
-  recordFact(orgId, String(args.topic ?? "note"), String(args.answer ?? ""));
-  return { saved: true, note: "Ask the next edge-case question. Do not dump a questionnaire." };
-}
-
-async function applySetupFromCall(orgId: string) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { applyStoredPlan } = require("./setup-coach") as typeof import("./setup-coach");
-  return applyStoredPlan(orgId);
 }

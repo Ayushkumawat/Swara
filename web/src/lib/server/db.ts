@@ -114,7 +114,6 @@ const SCHEMA = /* sql */ `
   CREATE TABLE knowledge_docs (
     id            TEXT PRIMARY KEY,
     org_id        TEXT NOT NULL,
-    agent_id      TEXT,                             -- null = org-wide fallback
     name          TEXT NOT NULL,
     kind          TEXT NOT NULL,                    -- pdf|url|csv|text
     size_label    TEXT NOT NULL,
@@ -597,30 +596,6 @@ export function getDb(): Database.Database {
   const extra = require("./seed") as typeof import("./seed");
   const orgIds = db.prepare("SELECT id FROM orgs").all() as { id: string }[];
   for (const org of orgIds) extra.seedWorkspaceV2(db, org.id);
-
-  const versionCols = db.prepare("PRAGMA table_info(agent_versions)").all() as { name: string }[];
-  if (!versionCols.some((c) => c.name === "agent_id")) {
-    db.exec("ALTER TABLE agent_versions ADD COLUMN agent_id TEXT");
-  }
-  if (!versionCols.some((c) => c.name === "snapshot")) {
-    db.exec("ALTER TABLE agent_versions ADD COLUMN snapshot TEXT");
-  }
-
-  const knowledgeCols = db.prepare("PRAGMA table_info(knowledge_docs)").all() as { name: string }[];
-  if (!knowledgeCols.some((c) => c.name === "agent_id")) {
-    db.exec("ALTER TABLE knowledge_docs ADD COLUMN agent_id TEXT");
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS setup_chats (
-      org_id      TEXT PRIMARY KEY REFERENCES orgs(id),
-      messages    TEXT NOT NULL DEFAULT '[]',
-      facts       TEXT NOT NULL DEFAULT '[]',
-      plan        TEXT,
-      applied_at  TEXT,
-      updated_at  TEXT NOT NULL
-    );
-  `);
 
   return db;
 }

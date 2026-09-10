@@ -11,7 +11,6 @@ import {
   DepartmentSchema,
   InvoiceSchema,
   PlaybookSchema,
-  SetupChatSchema,
   SessionUserSchema,
   TransferTargetSchema,
   AnalyticsSchema,
@@ -56,19 +55,9 @@ export class ApiError extends Error {
     readonly status: number,
     readonly path: string,
   ) {
-    super(readableApiMessage(message));
+    super(message);
     this.name = "ApiError";
   }
-}
-
-function readableApiMessage(body: string) {
-  try {
-    const parsed = JSON.parse(body) as { error?: string };
-    if (parsed.error) return parsed.error;
-  } catch {
-    /* raw */
-  }
-  return body;
 }
 
 /** Mock latency, so skeletons and streaming states are exercised in dev
@@ -127,12 +116,6 @@ const MOCK_ROUTES: Record<string, () => unknown> = {
   "/setup/connectors": () => [
     { id: "conn_demo", name: "Demo orders", kind: "demo", tool: "lookup_order", baseUrl: "", authHeader: "", status: "connected", hasSecret: false },
   ],
-  "/setup/chat": () => ({
-    messages: [],
-    facts: [],
-    plan: null,
-    appliedAt: null,
-  }),
   "/agents/templates": () => [
     { id: "tpl_order", name: "Order status", blurb: "Look up a live order.", intent: "order_status", direction: "inbound", needs: ["orders"] },
     { id: "tpl_grievance", name: "Complaint intake", blurb: "File a complaint.", intent: "complaint", direction: "inbound", needs: ["departments"] },
@@ -244,7 +227,6 @@ export const endpoints = {
   transfers: () => apiGet("/setup/transfers", z.array(TransferTargetSchema)),
   appointmentTypes: () => apiGet("/setup/appointments", z.array(AppointmentTypeSchema)),
   connectors: () => apiGet("/setup/connectors", z.array(ConnectorRowSchema)),
-  setupChat: () => apiGet("/setup/chat", SetupChatSchema),
   templates: () => apiGet("/agents/templates", z.array(AgentTemplateSchema)),
   campaignContacts: (id: string) => apiGet(`/campaigns/${id}/contacts`, z.array(CampaignContactSchema)),
 } as const;
@@ -265,10 +247,6 @@ export const mutations = {
     apiSend("POST", "/agents", body, z.object({ id: z.string() })),
   updateAgent: (id: string, body: unknown) =>
     apiSend("PATCH", `/agents/${id}`, body, z.object({ ok: z.boolean(), id: z.string() })),
-  deleteAgent: (id: string) =>
-    apiSend("DELETE", `/agents/${id}`, {}, z.object({ ok: z.boolean() })),
-  rollbackAgent: (id: string, versionId: string) =>
-    apiSend("POST", `/agents/${id}/rollback`, { versionId }, z.object({ ok: z.boolean() })),
   savePlaybook: (body: unknown) =>
     apiSend("POST", "/setup/playbook", body, PlaybookSchema),
   saveDepartment: (body: unknown) =>
@@ -293,10 +271,6 @@ export const mutations = {
     apiSend("PATCH", `/campaigns/${id}`, { status }, z.object({ ok: z.boolean() })),
   addContacts: (campaignId: string, contacts: unknown) =>
     apiSend("POST", `/campaigns/${campaignId}/contacts`, { contacts }, z.object({ added: z.number() })),
-  addKnowledge: (body: { name: string; kind?: "pdf" | "url" | "csv" | "text"; text: string; agentId?: string | null }) =>
+  addKnowledge: (body: { name: string; kind?: "pdf" | "url" | "csv" | "text"; text: string }) =>
     apiSend("POST", "/agents/knowledge", body, z.object({ id: z.string(), chunks: z.number().optional() }).passthrough()),
-  setupChat: (message: string) =>
-    apiSend("POST", "/setup/chat", { message }, SetupChatSchema),
-  applySetupPlan: () =>
-    apiSend("POST", "/setup/chat/apply", {}, z.object({ applied: z.boolean() }).passthrough()),
 } as const;

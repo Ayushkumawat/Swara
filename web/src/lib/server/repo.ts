@@ -506,25 +506,16 @@ export function agents(orgId: string) {
   }));
 }
 
-export function agentVersions(orgId: string, agentId?: string) {
-  const rows = (
-    agentId
-      ? db()
-          .prepare(
-            "SELECT * FROM agent_versions WHERE org_id=? AND (agent_id=? OR agent_id IS NULL) ORDER BY version DESC",
-          )
-          .all(orgId, agentId)
-      : db().prepare("SELECT * FROM agent_versions WHERE org_id=? ORDER BY version DESC").all(orgId)
-  ) as Row[];
-  return rows.map((r) => ({
+export function agentVersions(orgId: string) {
+  return (db().prepare(
+    "SELECT * FROM agent_versions WHERE org_id=? ORDER BY version DESC",
+  ).all(orgId) as Row[]).map((r) => ({
     id: r.id as string,
-    agentId: (r.agent_id as string) ?? null,
     version: r.version as number,
     label: r.label as string,
     author: r.author as string,
     createdAt: r.created_at as string,
     isLive: Boolean(r.is_live),
-    hasSnapshot: Boolean(r.snapshot),
   }));
 }
 
@@ -541,7 +532,6 @@ export function knowledgeDocs(orgId: string) {
     chunks: (r.chunk_count as number) || fallbackChunks(r),
     status: r.status as string,
     updatedAt: r.updated_at as string,
-    agentId: (r.agent_id as string) ?? null,
   }));
 }
 const fallbackChunks = (r: Row) => (r.status === "indexed" ? 1 : 0);
@@ -882,86 +872,19 @@ export function updateAgent(orgId: string, id: string, data: {
 }) {
   const current = db().prepare("SELECT * FROM agents WHERE id=? AND org_id=?").get(id, orgId) as Row | undefined;
   if (!current) return { error: "No such agent" } as const;
-  const nodes = JSON.stringify(data.nodes ?? JSON.parse(current.nodes as string));
-  const edges = JSON.stringify(data.edges ?? JSON.parse(current.edges as string));
-  const bump =
-    data.prompt !== undefined || data.status !== undefined || data.name !== undefined;
   db().prepare(
     `UPDATE agents SET name=?, prompt=?, status=?, nodes=?, edges=?, voice_id=?,
-       mode=?, version=version+?, updated_at=? WHERE id=? AND org_id=?`,
+       mode=?, version=version+1, updated_at=? WHERE id=? AND org_id=?`,
   ).run(
     data.name ?? current.name,
     data.prompt ?? current.prompt,
     data.status ?? current.status,
-    nodes,
-    edges,
+    JSON.stringify(data.nodes ?? JSON.parse(current.nodes as string)),
+    JSON.stringify(data.edges ?? JSON.parse(current.edges as string)),
     data.voiceId ?? current.voice_id,
-    JSON.parse(nodes).length ? "graph" : "prompt",
-    bump ? 1 : 0,
+    (data.nodes && data.nodes.length) || JSON.parse(current.nodes as string).length ? "graph" : "prompt",
     nowIso(), id, orgId,
   );
-  return { error: null } as const;
-}
-
-export function snapshotAgent(orgId: string, id: string, author: string, label: string) {
-  const current = db().prepare("SELECT * FROM agents WHERE id=? AND org_id=?").get(id, orgId) as Row | undefined;
-  if (!current) return { error: "No such agent" } as const;
-  db().prepare("UPDATE agent_versions SET is_live=0 WHERE org_id=? AND agent_id=?").run(orgId, id);
-  db().prepare(
-    `INSERT INTO agent_versions (id, org_id, agent_id, version, label, author, created_at, is_live, snapshot)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-  ).run(
-    uid("ver"),
-    orgId,
-    id,
-    current.version,
-    label,
-    author,
-    nowIso(),
-    JSON.stringify({
-      name: current.name,
-      prompt: current.prompt,
-      nodes: JSON.parse(current.nodes as string),
-      edges: JSON.parse(current.edges as string),
-      status: current.status,
-    }),
-  );
-  return { error: null } as const;
-}
-
-export function rollbackAgent(orgId: string, versionId: string) {
-  const row = db().prepare("SELECT * FROM agent_versions WHERE id=? AND org_id=?").get(versionId, orgId) as
-    | Row
-    | undefined;
-  if (!row?.snapshot || !row.agent_id) return { error: "This version has no snapshot to restore" } as const;
-  const snap = JSON.parse(row.snapshot as string) as {
-    name?: string;
-    prompt?: string;
-    nodes?: unknown[];
-    edges?: unknown[];
-  };
-  const result = updateAgent(orgId, row.agent_id as string, {
-    name: snap.name,
-    prompt: snap.prompt ?? undefined,
-    nodes: snap.nodes,
-    edges: snap.edges,
-  });
-  if (result.error) return result;
-  db().prepare("UPDATE agent_versions SET is_live=0 WHERE org_id=? AND agent_id=?").run(orgId, row.agent_id);
-  db().prepare("UPDATE agent_versions SET is_live=1 WHERE id=?").run(versionId);
-  return { error: null } as const;
-}
-
-export function deleteAgent(orgId: string, id: string) {
-  const running = (db()
-    .prepare("SELECT COUNT(*) n FROM campaigns WHERE org_id=? AND agent_id=? AND status='running'")
-    .get(orgId, id) as { n: number }).n;
-  if (running > 0) return { error: "Pause running campaigns that use this agent first" } as const;
-  db().prepare("UPDATE numbers SET assigned_agent_id=NULL, assigned_agent_name=NULL WHERE org_id=? AND assigned_agent_id=?").run(orgId, id);
-  db().prepare("UPDATE voices SET assigned_agent_id=NULL WHERE org_id=? AND assigned_agent_id=?").run(orgId, id);
-  db().prepare("DELETE FROM agent_versions WHERE org_id=? AND agent_id=?").run(orgId, id);
-  const gone = db().prepare("DELETE FROM agents WHERE id=? AND org_id=?").run(id, orgId);
-  if (!gone.changes) return { error: "No such agent" } as const;
   return { error: null } as const;
 }
 

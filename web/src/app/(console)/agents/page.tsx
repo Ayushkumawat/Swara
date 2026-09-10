@@ -1,22 +1,18 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  Copy,
   FileText,
   Globe,
   History,
   Mic,
-  Pause,
   PhoneOutgoing,
-  Play,
   Plus,
   RotateCcw,
   Sparkles,
-  Trash2,
   Upload,
 } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
@@ -32,7 +28,7 @@ import { IS_MOCK, mutations } from "@/lib/api/client";
 import { AGENT_TEMPLATES, templateById } from "@/lib/agents/templates";
 import { qk, useAgentTemplates, useAgentVersions, useAgents, useKnowledge } from "@/lib/api/hooks";
 import { useUi } from "@/lib/ui-store";
-import { INTENT_LABEL, type Agent, type FlowEdge, type FlowNode } from "@/lib/api/schemas";
+import { INTENT_LABEL, type Agent, type FlowNode } from "@/lib/api/schemas";
 import { cn, initialsOf, relativeTime } from "@/lib/utils";
 
 // The canvas carries drag handling and per-node SVG; only the Flow builder
@@ -104,11 +100,6 @@ export default function AgentsPage() {
                       agent={a}
                       active={selected?.id === a.id}
                       onClick={() => setSelectedId(a.id)}
-                      onChanged={() => void qc.invalidateQueries({ queryKey: qk.agents })}
-                      onDeleted={() => {
-                        if (selectedId === a.id) setSelectedId(null);
-                        void qc.invalidateQueries({ queryKey: qk.agents });
-                      }}
                     />
                   ))}
                 </div>
@@ -127,17 +118,28 @@ export default function AgentsPage() {
                   : undefined
               }
               action={
-                selected ? (
-                  <AgentActions
-                    agent={selected}
-                    onTest={() => setCalling(true)}
-                    onChanged={() => void qc.invalidateQueries({ queryKey: qk.agents })}
-                    onDeleted={() => {
-                      setSelectedId(null);
-                      void qc.invalidateQueries({ queryKey: qk.agents });
+                <div className="flex gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => setCalling(true)}>
+                    <PhoneOutgoing className="size-3.5" />
+                    Test call
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={async () => {
+                      if (!selected) return;
+                      try {
+                        if (!IS_MOCK) await mutations.updateAgent(selected.id, { status: "live" });
+                        toast.success("Published", { description: "Live on the next inbound call." });
+                        void qc.invalidateQueries({ queryKey: qk.agents });
+                      } catch {
+                        toast.error("Could not publish");
+                      }
                     }}
-                  />
-                ) : null
+                  >
+                    Publish
+                  </Button>
+                </div>
               }
             />
 
@@ -145,13 +147,13 @@ export default function AgentsPage() {
 
             {selected ? (
               <>
-                {tab === "flow" ? <FlowTab key={selected.id} agent={selected} /> : null}
+                {tab === "flow" ? <FlowTab agent={selected} /> : null}
                 {tab === "prompt" ? <PromptTab key={selected.id} agent={selected} /> : null}
-                {tab === "knowledge" ? <KnowledgeTab key={selected.id} agent={selected} /> : null}
+                {tab === "knowledge" ? <KnowledgeTab /> : null}
                 {tab === "test" ? (
                   <TestTab agent={selected} onStartCall={() => setCalling(true)} />
                 ) : null}
-                {tab === "versions" ? <VersionsTab agent={selected} /> : null}
+                {tab === "versions" ? <VersionsTab /> : null}
               </>
             ) : (
               <CardSkeleton height={380} />
@@ -268,127 +270,21 @@ function TemplateGallery({
   );
 }
 
-async function setAgentStatus(id: string, status: Agent["status"]) {
-  if (!IS_MOCK) await mutations.updateAgent(id, { status });
-}
-
-async function removeAgent(id: string) {
-  if (!IS_MOCK) await mutations.deleteAgent(id);
-}
-
-function AgentActions({
-  agent,
-  onTest,
-  onChanged,
-  onDeleted,
-}: {
-  agent: Agent;
-  onTest: () => void;
-  onChanged: () => void;
-  onDeleted: () => void;
-}) {
-  const qc = useQueryClient();
-
-  const setStatus = async (status: Agent["status"], ok: string) => {
-    try {
-      await setAgentStatus(agent.id, status);
-      toast.success(ok);
-      onChanged();
-    } catch {
-      toast.error("Could not update agent");
-    }
-  };
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      <Button size="sm" variant="ghost" onClick={onTest}>
-        <PhoneOutgoing className="size-3.5" />
-        Test call
-      </Button>
-      {agent.status === "live" ? (
-        <Button
-          size="sm"
-          variant="subtle"
-          onClick={() => void setStatus("paused", "Stopped — it will not answer new calls")}
-        >
-          <Pause className="size-3.5" />
-          Stop
-        </Button>
-      ) : (
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={() =>
-            void setStatus("live", agent.status === "paused" ? "Resumed" : "Published")
-          }
-        >
-          <Play className="size-3.5" />
-          {agent.status === "paused" ? "Resume" : "Publish"}
-        </Button>
-      )}
-      <Button
-        size="sm"
-        variant="subtle"
-        onClick={async () => {
-          try {
-            const res = IS_MOCK
-              ? { id: `${agent.id}_copy` }
-              : await mutations.createAgent({
-                  name: `${agent.name} copy`,
-                  intent: agent.intent,
-                  direction: agent.direction,
-                  prompt: agent.prompt,
-                  nodes: agent.nodes,
-                  edges: agent.edges,
-                });
-            toast.success("Duplicated as a draft");
-            void qc.invalidateQueries({ queryKey: qk.agents });
-            return res.id;
-          } catch {
-            toast.error("Could not duplicate");
-          }
-        }}
-      >
-        <Copy className="size-3.5" />
-      </Button>
-      <Button
-        size="sm"
-        variant="danger"
-        onClick={async () => {
-          if (!window.confirm(`Delete ${agent.name}? Numbers will be unassigned. Call history stays.`)) return;
-          try {
-            await removeAgent(agent.id);
-            toast.success("Agent deleted");
-            onDeleted();
-          } catch (error) {
-            toast.error(error instanceof Error ? error.message : "Could not delete");
-          }
-        }}
-      >
-        <Trash2 className="size-3.5" />
-      </Button>
-    </div>
-  );
-}
-
 function AgentRow({
   agent,
   active,
   onClick,
-  onChanged,
-  onDeleted,
 }: {
   agent: Agent;
   active: boolean;
   onClick: () => void;
-  onChanged: () => void;
-  onDeleted: () => void;
 }) {
   const tone =
-    agent.status === "live" ? "cyan" : agent.status === "testing" || agent.status === "paused" ? "amber" : "grey";
+    agent.status === "live" ? "cyan" : agent.status === "testing" ? "amber" : "grey";
 
   return (
-    <div
+    <button
+      onClick={onClick}
       className={cn(
         "flex w-full gap-3 rounded-[14px] border p-3 text-left transition-colors",
         active
@@ -396,102 +292,46 @@ function AgentRow({
           : "border-hairline bg-white/[0.045] hover:bg-white/[0.07]",
       )}
     >
-      <button onClick={onClick} className="flex min-w-0 flex-1 gap-3 text-left">
-        <span className="grad-brand flex size-9 shrink-0 items-center justify-center rounded-[10px] font-[family-name:var(--font-display)] text-[13px] font-semibold text-void">
-          {initialsOf(agent.name)}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium text-t1">{agent.name}</span>
-          <span className="mt-1 flex items-center gap-1.5">
-            <Pill tone={tone} className="capitalize">
-              {agent.status}
-            </Pill>
-            {agent.status === "live" ? <Waveform bars={3} height={11} tone="cyan" /> : null}
-            <span className="truncate text-[10.5px] text-t3">
-              Follows the caller
-              {agent.callsToday > 0 ? ` · ${agent.callsToday} calls` : ""}
-            </span>
+      <span className="grad-brand flex size-9 shrink-0 items-center justify-center rounded-[10px] font-[family-name:var(--font-display)] text-[13px] font-semibold text-void">
+        {initialsOf(agent.name)}
+      </span>
+      <span className="min-w-0 flex-1">
+        {/* Name gets the full row width; status moves below rather than
+            competing with it and truncating every agent to "Delivery resc…" */}
+        <span className="block truncate text-[13px] font-medium text-t1">{agent.name}</span>
+        <span className="mt-1 flex items-center gap-1.5">
+          <Pill tone={tone} className="capitalize">
+            {agent.status}
+          </Pill>
+          {agent.status === "live" ? <Waveform bars={3} height={11} tone="cyan" /> : null}
+          <span className="truncate text-[10.5px] text-t3">
+            Follows the caller
+            {agent.callsToday > 0 ? ` · ${agent.callsToday} calls` : ""}
           </span>
         </span>
-      </button>
-      <div className="flex shrink-0 flex-col gap-1">
-        {agent.status === "live" ? (
-          <button
-            type="button"
-            title="Stop agent"
-            onClick={async (e) => {
-              e.stopPropagation();
-              try {
-                await setAgentStatus(agent.id, "paused");
-                toast.success("Stopped");
-                onChanged();
-              } catch {
-                toast.error("Could not stop");
-              }
-            }}
-            className="rounded-md p-1 text-t3 hover:bg-white/[0.08] hover:text-amber"
-          >
-            <Pause className="size-3.5" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            title="Publish"
-            onClick={async (e) => {
-              e.stopPropagation();
-              try {
-                await setAgentStatus(agent.id, "live");
-                toast.success("Live");
-                onChanged();
-              } catch {
-                toast.error("Could not publish");
-              }
-            }}
-            className="rounded-md p-1 text-t3 hover:bg-white/[0.08] hover:text-cyan"
-          >
-            <Play className="size-3.5" />
-          </button>
-        )}
-        <button
-          type="button"
-          title="Delete agent"
-          onClick={async (e) => {
-            e.stopPropagation();
-            if (!window.confirm(`Delete ${agent.name}?`)) return;
-            try {
-              await removeAgent(agent.id);
-              toast.success("Deleted");
-              onDeleted();
-            } catch (error) {
-              toast.error(error instanceof Error ? error.message : "Could not delete");
-            }
-          }}
-          className="rounded-md p-1 text-t3 hover:bg-coral/[0.12] hover:text-coral"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      </div>
-    </div>
+      </span>
+    </button>
   );
 }
 
 function FlowTab({ agent }: { agent: Agent }) {
+  const qc = useQueryClient();
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
-  const [linkingFrom, setLinkingFrom] = useState<string | null>(null);
   const [nodes, setNodes] = useState(agent.nodes);
   const [edges, setEdges] = useState(agent.edges);
-  const [name, setName] = useState(agent.name);
   const moveTimer = useRef<number | null>(null);
-  const nameTimer = useRef<number | null>(null);
-  const agentsQuery = useAgents();
-  const siblings = (agentsQuery.data ?? []).filter((a) => a.id !== agent.id);
 
-  const persist = async (nextNodes: FlowNode[], nextEdges: FlowEdge[]) => {
+  useEffect(() => {
+    setNodes(agent.nodes);
+    setEdges(agent.edges);
+  }, [agent.id, agent.nodes, agent.edges]);
+
+  const persist = async (nextNodes: typeof nodes, nextEdges: typeof edges, refresh = false) => {
     setNodes(nextNodes);
     setEdges(nextEdges);
     try {
       if (!IS_MOCK) await mutations.updateAgent(agent.id, { nodes: nextNodes, edges: nextEdges });
+      if (refresh) void qc.invalidateQueries({ queryKey: qk.agents });
     } catch {
       toast.error("Could not save flow");
     }
@@ -499,83 +339,30 @@ function FlowTab({ agent }: { agent: Agent }) {
 
   const generate = async () => {
     const tpl = AGENT_TEMPLATES.find((t) => t.intent === agent.intent) ?? AGENT_TEMPLATES[0];
-    await persist(tpl.nodes, tpl.edges);
+    await persist(tpl.nodes, tpl.edges, true);
     toast.success(`Graph from ${tpl.name}`);
   };
 
   const addNode = (kind: FlowNode["kind"]) => {
-    const labels: Partial<Record<FlowNode["kind"], string>> = {
-      collect: "Ask",
-      data_pull: "Look up",
-      book: "Book",
-      branch: "Branch",
-      escalate: "Transfer",
-      end: "Hang up",
-    };
     const node: FlowNode = {
       id: `n_${Date.now()}`,
       kind,
-      title: labels[kind] ?? kind.replace("_", " "),
+      title: kind.replace("_", " "),
       x: 80 + (nodes.length % 4) * 220,
       y: 80 + Math.floor(nodes.length / 4) * 140,
-      config: kind === "escalate" ? { transferKind: "agent" } : kind === "data_pull" ? { tool: "search_knowledge" } : {},
+      config: {},
     };
-    const nextNodes = [...nodes, node];
-    const nextEdges =
-      selectedNode && nodes.find((n) => n.id === selectedNode)?.kind !== "end"
-        ? [
-            ...edges,
-            {
-              id: `e_${Date.now()}`,
-              from: selectedNode,
-              to: node.id,
-              tone: "default" as const,
-            },
-          ]
-        : edges;
-    setSelectedNode(node.id);
-    void persist(nextNodes, nextEdges);
+    void persist([...nodes, node], edges, true);
   };
-
-  const removeNode = (id: string) => {
-    const node = nodes.find((n) => n.id === id);
-    if (!node || node.kind === "start") {
-      toast.error("The start node stays — the call has to begin somewhere");
-      return;
-    }
-    setSelectedNode(null);
-    void persist(
-      nodes.filter((n) => n.id !== id),
-      edges.filter((e) => e.from !== id && e.to !== id),
-    );
-  };
-
-  const connect = (from: string, to: string) => {
-    setLinkingFrom(null);
-    if (from === to) return;
-    if (edges.some((e) => e.from === from && e.to === to)) return;
-    const source = nodes.find((n) => n.id === from);
-    if (source?.kind === "end") return;
-    void persist(nodes, [
-      ...edges,
-      { id: `e_${Date.now()}`, from, to, tone: source?.kind === "escalate" ? "danger" : "default" },
-    ]);
-  };
-
-  const removeEdge = (id: string) => {
-    setSelectedEdge(null);
-    void persist(nodes, edges.filter((e) => e.id !== id));
-  };
-
-  const selected = nodes.find((n) => n.id === selectedNode) ?? null;
-  const edge = edges.find((e) => e.id === selectedEdge) ?? null;
 
   if (nodes.length === 0) {
     return (
       <div className="rounded-[22px] border border-dashed border-hairline bg-white/[0.02] p-10 text-center">
-        <p className="text-[13px] text-t2">{agent.name} is authored in single-prompt mode.</p>
+        <p className="text-[13px] text-t2">
+          {agent.name} is authored in single-prompt mode.
+        </p>
         <p className="mx-auto mt-2 max-w-md text-[12px] leading-relaxed text-t3">
-          Generate a starter graph from this agent&apos;s intent, then drag and wire nodes.
+          Generate a starter graph from this agent&apos;s intent, then drag and add nodes.
           Language is never a step — the voice follows the caller.
         </p>
         <Button variant="ghost" size="sm" className="mt-5" onClick={() => void generate()}>
@@ -587,244 +374,34 @@ function FlowTab({ agent }: { agent: Agent }) {
 
   return (
     <>
-      <Field label="Agent name">
-        <TextInput
-          value={name}
-          onChange={(v) => {
-            setName(v);
-            if (nameTimer.current) window.clearTimeout(nameTimer.current);
-            nameTimer.current = window.setTimeout(() => {
-              if (!IS_MOCK && v.trim()) void mutations.updateAgent(agent.id, { name: v.trim() });
-            }, 500);
-          }}
-        />
-      </Field>
-      <p className="mb-3 rounded-[14px] border border-hairline bg-white/[0.03] px-3.5 py-3 text-[12.5px] leading-relaxed text-t2">
-        Each box is a real step the voice agent must take. Look-up calls{" "}
-        <span className="font-[family-name:var(--font-mono)] text-[11.5px] text-t1">lookup_order</span>{" "}
-        or knowledge search, Book calls{" "}
-        <span className="font-[family-name:var(--font-mono)] text-[11.5px] text-t1">book_slot</span>, Transfer
-        hands the caller to a human or another agent (that agent&apos;s knowledge, not this one), Hang up
-        says goodbye and closes the line. The canvas is compiled into the live prompt — skipping a tool
-        means the action did not happen.
-      </p>
       <div className="mb-3 flex flex-wrap gap-1.5">
-        {(
-          [
-            ["collect", "Ask"],
-            ["data_pull", "Look up"],
-            ["book", "Book"],
-            ["branch", "Branch"],
-            ["escalate", "Transfer"],
-            ["end", "Hang up"],
-          ] as const
-        ).map(([kind, label]) => (
+        {(["collect", "say", "data_pull", "branch", "book", "escalate", "end"] as const).map((kind) => (
           <Button key={kind} size="sm" variant="subtle" onClick={() => addNode(kind)}>
-            + {label}
+            + {kind.replace("_", " ")}
           </Button>
         ))}
+        <Button size="sm" variant="ghost" onClick={() => void persist(nodes, edges, true)}>
+          Save layout
+        </Button>
       </div>
-      {linkingFrom ? (
-        <div className="mb-3 flex items-center justify-between rounded-[12px] border border-cyan/25 bg-cyan/[0.06] px-3 py-2 text-[12px] text-t2">
-          <span>Click a node to connect from {nodes.find((n) => n.id === linkingFrom)?.title ?? "this step"}.</span>
-          <Button size="sm" variant="subtle" onClick={() => setLinkingFrom(null)}>
-            Cancel
-          </Button>
-        </div>
-      ) : null}
       <FlowCanvas
         nodes={nodes}
         edges={edges}
         selectedId={selectedNode}
-        selectedEdgeId={selectedEdge}
-        linkingFrom={linkingFrom}
         onSelect={setSelectedNode}
-        onSelectEdge={setSelectedEdge}
-        onLinkStart={setLinkingFrom}
-        onLinkCancel={() => setLinkingFrom(null)}
-        onConnect={connect}
-        onDelete={removeNode}
-        onDeleteEdge={removeEdge}
         onMove={(id, x, y) => {
           setNodes((prev) => {
             const next = prev.map((n) => (n.id === id ? { ...n, x, y } : n));
             if (moveTimer.current) window.clearTimeout(moveTimer.current);
             moveTimer.current = window.setTimeout(() => {
               void persist(next, edges);
-            }, 400);
+            }, 700);
             return next;
           });
         }}
       />
-      {selected || edge ? (
-        <div className="mt-3 grid gap-3 rounded-[16px] border border-hairline bg-white/[0.03] p-3.5 sm:grid-cols-2">
-          {selected ? (
-            <>
-              <Field label="Step title">
-                <TextInput
-                  value={selected.title}
-                  onChange={(v) => {
-                    const next = nodes.map((n) => (n.id === selected.id ? { ...n, title: v } : n));
-                    void persist(next, edges);
-                  }}
-                />
-              </Field>
-              <Field label="Detail">
-                <TextInput
-                  value={selected.detail ?? ""}
-                  onChange={(v) => {
-                    const next = nodes.map((n) => (n.id === selected.id ? { ...n, detail: v } : n));
-                    void persist(next, edges);
-                  }}
-                />
-              </Field>
-              {selected.kind === "data_pull" ? (
-                <Field label="Tool this step must call" hint="If the model skips the tool, the fact does not exist.">
-                  <select
-                    value={String(selected.config?.tool ?? "search_knowledge")}
-                    onChange={(e) => {
-                      const next = nodes.map((n) =>
-                        n.id === selected.id
-                          ? { ...n, config: { ...n.config, tool: e.target.value } }
-                          : n,
-                      );
-                      void persist(next, edges);
-                    }}
-                    className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-                  >
-                    <option value="lookup_order">Look up order</option>
-                    <option value="register_complaint">Register complaint</option>
-                    <option value="search_knowledge">Search this agent&apos;s knowledge</option>
-                  </select>
-                </Field>
-              ) : null}
-              {selected.kind === "escalate" ? (
-                <>
-                  <Field label="Hand off to">
-                    <select
-                      value={String(
-                        selected.config?.transferKind ??
-                          (selected.config?.targetAgentName ? "agent" : "human"),
-                      )}
-                      onChange={(e) => {
-                        const transferKind = e.target.value;
-                        const next = nodes.map((n) =>
-                          n.id === selected.id
-                            ? {
-                                ...n,
-                                config:
-                                  transferKind === "human"
-                                    ? { transferKind: "human" }
-                                    : { ...n.config, transferKind: "agent" },
-                              }
-                            : n,
-                        );
-                        void persist(next, edges);
-                      }}
-                      className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-                    >
-                      <option value="agent">Another agent (their knowledge)</option>
-                      <option value="human">A human desk</option>
-                    </select>
-                  </Field>
-                  {String(selected.config?.transferKind ?? (selected.config?.targetAgentName ? "agent" : "human")) ===
-                  "agent" ? (
-                    <Field
-                      label="Which agent"
-                      hint={
-                        siblings.length === 0
-                          ? "Create another agent first — Setup → Swara will suggest the split."
-                          : "The caller is handed to that line and its knowledge base."
-                      }
-                    >
-                      <select
-                        value={String(selected.config?.targetAgentId ?? "")}
-                        onChange={(e) => {
-                          const sib = siblings.find((s) => s.id === e.target.value);
-                          const next = nodes.map((n) =>
-                            n.id === selected.id
-                              ? {
-                                  ...n,
-                                  title: sib ? `To ${sib.name}` : n.title,
-                                  config: {
-                                    transferKind: "agent",
-                                    targetAgentId: sib?.id,
-                                    targetAgentName: sib?.name,
-                                  },
-                                }
-                              : n,
-                          );
-                          void persist(next, edges);
-                        }}
-                        className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-                      >
-                        <option value="">Pick an agent</option>
-                        {siblings.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name} · {INTENT_LABEL[s.intent]}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  ) : (
-                    <p className="text-[11.5px] text-t3">
-                      Uses desks from Workspace setup → Transfers. If that list is empty the agent
-                      takes a callback instead of inventing a person.
-                    </p>
-                  )}
-                </>
-              ) : null}
-              {selected.kind === "end" ? (
-                <p className="text-[11.5px] text-t3">
-                  Speaks a one-line goodbye, calls end_call, and the line closes.
-                </p>
-              ) : null}
-              {selected.kind !== "start" ? (
-                <Button size="sm" variant="danger" onClick={() => removeNode(selected.id)}>
-                  <Trash2 className="size-3.5" />
-                  Remove node
-                </Button>
-              ) : (
-                <p className="text-[11.5px] text-t3">Start cannot be removed.</p>
-              )}
-            </>
-          ) : null}
-          {edge ? (
-            <>
-              <Field label="Wire label">
-                <TextInput
-                  value={edge.label ?? ""}
-                  onChange={(v) => {
-                    const next = edges.map((e) => (e.id === edge.id ? { ...e, label: v } : e));
-                    void persist(nodes, next);
-                  }}
-                />
-              </Field>
-              <Field label="Path">
-                <select
-                  value={edge.tone}
-                  onChange={(e) => {
-                    const tone = e.target.value as FlowEdge["tone"];
-                    const next = edges.map((row) => (row.id === edge.id ? { ...row, tone } : row));
-                    void persist(nodes, next);
-                  }}
-                  className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-                >
-                  <option value="default">Default</option>
-                  <option value="success">Success</option>
-                  <option value="danger">Escalation</option>
-                </select>
-              </Field>
-              <Button size="sm" variant="danger" onClick={() => removeEdge(edge.id)}>
-                <Trash2 className="size-3.5" />
-                Remove wire
-              </Button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-t3">
-        <span>Drag to move · right port to wire · Delete to remove · layout saves as you go</span>
+        <span>Drag nodes to rearrange · add a node from the palette · language follows the caller</span>
         <span className="flex items-center gap-1.5">
           <span className="h-px w-4 bg-cyan/60" /> success path
         </span>
@@ -873,7 +450,7 @@ function PromptTab({ agent }: { agent: Agent }) {
       <div className="glass rounded-[14px] p-3.5">
         <div className="mb-2 text-[11.5px] font-medium text-t2">Tools this agent can call</div>
         <div className="flex flex-wrap gap-2">
-          {["lookup_order", "register_complaint", "book_slot", "search_knowledge", "transfer_to_human", "transfer_to_agent", "end_call"].map(
+          {["lookup_order", "register_complaint", "book_slot", "search_knowledge", "transfer_to_human"].map(
             (t) => (
               <Pill key={t} tone="violet">
                 <span className="font-[family-name:var(--font-mono)]">{t}</span>
@@ -882,15 +459,14 @@ function PromptTab({ agent }: { agent: Agent }) {
           )}
         </div>
         <p className="mt-2 text-[11px] text-t3">
-          Transfer to another agent hands the caller to that line&apos;s knowledge. Hang-up is
-          end_call — not a suggestion. Desks and slots come from Workspace setup.
+          Transfer and booking only work after you fill those desks in Workspace setup.
         </p>
       </div>
     </div>
   );
 }
 
-function KnowledgeTab({ agent }: { agent: Agent }) {
+function KnowledgeTab() {
   const query = useKnowledge();
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -902,8 +478,8 @@ function KnowledgeTab({ agent }: { agent: Agent }) {
       return;
     }
     try {
-      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text, agentId: agent.id });
-      toast.success(`Indexed for ${agent.name}`);
+      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text });
+      toast.success("Indexed");
       setName("");
       setText("");
       void qc.invalidateQueries({ queryKey: qk.knowledge });
@@ -916,10 +492,9 @@ function KnowledgeTab({ agent }: { agent: Agent }) {
     <div className="space-y-4">
       <div className="rounded-[18px] border border-dashed border-hairline bg-white/[0.02] p-6">
         <Upload className="mb-3 size-5 text-t3" strokeWidth={1.6} />
-        <p className="text-[13px] text-t1">Paste policy, fare or FAQ text for {agent.name}</p>
-        <p className="mt-1 mb-3 text-[11.5px] leading-relaxed text-t3">
-          Search is scoped to this agent, plus any org-wide docs. That is how a bookings agent
-          stays out of order-status answers.
+        <p className="text-[13px] text-t1">Paste policy, fare or FAQ text</p>
+        <p className="mt-1 mb-3 text-[11.5px] text-t3">
+          Grounds answers in your own content. PDF parsing can wait — the search pipeline is already real.
         </p>
         <Field label="Name">
           <TextInput value={name} onChange={setName} placeholder="Refund policy" />
@@ -952,11 +527,6 @@ function KnowledgeTab({ agent }: { agent: Agent }) {
                   <span className="block truncate text-[13px] text-t1">{d.name}</span>
                   <span className="text-[11px] text-t3">
                     {d.sizeLabel} · {d.chunks.toLocaleString("en-IN")} chunks
-                    {d.agentId === agent.id
-                      ? ` · ${agent.name}`
-                      : d.agentId
-                        ? " · another agent"
-                        : " · shared"}
                   </span>
                 </span>
                 <Pill tone={d.status === "indexed" ? "cyan" : d.status === "indexing" ? "amber" : "coral"}>
@@ -1043,64 +613,47 @@ function TestTab({ agent, onStartCall }: { agent: Agent; onStartCall: () => void
   );
 }
 
-function VersionsTab({ agent }: { agent: Agent }) {
+function VersionsTab() {
   const query = useAgentVersions();
-  const qc = useQueryClient();
 
   return (
     <QueryBoundary query={query} skeleton={<RowsSkeleton rows={4} />}>
-      {(versions) => {
-        const mine = versions.filter((v) => !v.agentId || v.agentId === agent.id);
-        return (
-          <div>
-            <p className="mb-3 text-[11.5px] text-t3">
-              Publish writes a snapshot. Rolling back restores that prompt and graph on the next call.
-            </p>
-            {mine.length === 0 ? (
-              <p className="text-[12.5px] text-t3">No published versions yet.</p>
-            ) : (
-              mine.map((v) => (
-                <ListRow key={v.id}>
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-white/[0.06]">
-                    <History className="size-3.5 text-t2" strokeWidth={1.7} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <Mono className="text-t1">v{v.version}</Mono>
-                      <span className="truncate text-[12.5px] text-t1">{v.label}</span>
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-t3">
-                      {v.author} · {relativeTime(v.createdAt)}
-                    </span>
-                  </span>
-                  {v.isLive ? (
-                    <Pill tone="cyan">Live</Pill>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="subtle"
-                      disabled={v.hasSnapshot === false}
-                      onClick={async () => {
-                        try {
-                          if (!IS_MOCK) await mutations.rollbackAgent(agent.id, v.id);
-                          toast.success(`Rolled back to v${v.version}`);
-                          void qc.invalidateQueries({ queryKey: qk.agents });
-                          void qc.invalidateQueries({ queryKey: qk.agentVersions });
-                        } catch {
-                          toast.error("This version has no snapshot to restore");
-                        }
-                      }}
-                    >
-                      <RotateCcw className="size-3" />
-                      Roll back
-                    </Button>
-                  )}
-                </ListRow>
-              ))
-            )}
-          </div>
-        );
-      }}
+      {(versions) => (
+        <div>
+          <p className="mb-3 text-[11.5px] text-t3">
+            Every publish and every copilot edit is a version. Rolling back takes effect on the next
+            call — no redeploy.
+          </p>
+          {versions.map((v) => (
+            <ListRow key={v.id}>
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-white/[0.06]">
+                <History className="size-3.5 text-t2" strokeWidth={1.7} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <Mono className="text-t1">v{v.version}</Mono>
+                  <span className="truncate text-[12.5px] text-t1">{v.label}</span>
+                </span>
+                <span className="mt-0.5 block text-[11px] text-t3">
+                  {v.author} · {relativeTime(v.createdAt)}
+                </span>
+              </span>
+              {v.isLive ? (
+                <Pill tone="cyan">Live</Pill>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="subtle"
+                  onClick={() => toast.success(`Rolled back to v${v.version}`)}
+                >
+                  <RotateCcw className="size-3" />
+                  Roll back
+                </Button>
+              )}
+            </ListRow>
+          ))}
+        </div>
+      )}
     </QueryBoundary>
   );
 }

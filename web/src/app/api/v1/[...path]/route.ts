@@ -7,7 +7,6 @@ import { finishCall } from "@/lib/server/pipeline";
 import { executeTool } from "@/lib/server/tools";
 import { ingestKnowledgeDoc } from "@/lib/server/ai";
 import * as ws from "@/lib/server/workspace";
-import { applyStoredPlan, coachReply, loadChat } from "@/lib/server/setup-coach";
 
 /**
  * The whole API surface in one router.
@@ -59,7 +58,6 @@ const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = 
   "setup/transfers": (u) => ws.transferTargets(u.orgId),
   "setup/appointments": (u) => ws.appointmentTypes(u.orgId),
   "setup/connectors": (u) => ws.connectors(u.orgId),
-  "setup/chat": (u) => loadSetupChat(u.orgId),
   "analytics": (u) => repo.analytics(u.orgId),
   "billing/usage": (u) => repo.usage(u.orgId),
   "billing/invoices": (u) => repo.invoices(u.orgId),
@@ -82,16 +80,6 @@ function publicPlaybook(orgId: string) {
     transferPolicy: p.transferPolicy,
     bookingPolicy: p.bookingPolicy,
     complaintSlaHours: p.complaintSlaHours,
-  };
-}
-
-function loadSetupChat(orgId: string) {
-  const chat = loadChat(orgId);
-  return {
-    messages: chat.messages,
-    facts: chat.facts,
-    plan: chat.plan,
-    appliedAt: chat.appliedAt,
   };
 }
 
@@ -138,10 +126,6 @@ const KnowledgeBody = z.object({
   /** Extracted text. Parsing PDFs/crawling URLs belongs in a worker later;
    *  the API takes text so the pipeline downstream is already real. */
   text: z.string().min(20).max(500_000),
-  agentId: z.string().nullable().optional(),
-});
-const SetupChatBody = z.object({
-  message: z.string().max(8000).optional(),
 });
 const CreateAgentBody = z.object({
   name: z.string().min(1).optional(),
@@ -149,10 +133,7 @@ const CreateAgentBody = z.object({
   intent: z.string().optional(),
   direction: z.enum(["inbound", "outbound", "both"]).optional(),
   prompt: z.string().optional(),
-  nodes: z.array(z.unknown()).optional(),
-  edges: z.array(z.unknown()).optional(),
 });
-const RollbackBody = z.object({ versionId: z.string() });
 const PlaybookBody = z.object({
   businessType: z.string().optional(),
   hours: z.string().optional(),
@@ -267,13 +248,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     if (!user) return json({ error: "Not signed in" }, 401);
     const parsed = KnowledgeBody.safeParse(body);
     if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid document" }, 400);
-    const doc = await ingestKnowledgeDoc(
-      user.orgId,
-      parsed.data.name,
-      parsed.data.kind,
-      parsed.data.text,
-      parsed.data.agentId,
-    );
+    const doc = await ingestKnowledgeDoc(user.orgId, parsed.data.name, parsed.data.kind, parsed.data.text);
     return json(doc, 201);
   }
 
@@ -298,18 +273,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
       intent: parsed.data.intent ?? tpl?.intent ?? "other",
       direction: parsed.data.direction ?? tpl?.direction ?? "inbound",
       prompt: parsed.data.prompt ?? tpl?.prompt,
-      nodes: parsed.data.nodes ?? tpl?.nodes,
-      edges: parsed.data.edges ?? tpl?.edges,
+      nodes: tpl?.nodes,
+      edges: tpl?.edges,
     });
     return json({ id }, 201);
-  }
-
-  if (path[0] === "agents" && path[1] && path[2] === "rollback") {
-    const parsed = RollbackBody.safeParse(body);
-    if (!parsed.success) return json({ error: "versionId required" }, 400);
-    const result = repo.rollbackAgent(user.orgId, parsed.data.versionId);
-    if (result.error) return json({ error: result.error }, 400);
-    return json({ ok: true });
   }
 
   if (key === "setup/playbook") {
@@ -341,19 +308,6 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     const parsed = ConnectorBody.safeParse(body);
     if (!parsed.success) return json({ error: "Invalid connector" }, 400);
     return json(ws.upsertConnector(user.orgId, parsed.data));
-  }
-
-  if (key === "setup/chat") {
-    const parsed = SetupChatBody.safeParse(body);
-    if (!parsed.success) return json({ error: "message too long" }, 400);
-    const chat = await coachReply(user.orgId, parsed.data.message ?? "");
-    return json(chat);
-  }
-
-  if (key === "setup/chat/apply") {
-    const result = await applyStoredPlan(user.orgId);
-    if (!result.applied) return json(result, 400);
-    return json(result);
   }
 
   if (key === "campaigns") {
@@ -412,9 +366,6 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ path: str
     if (!parsed.success) return json({ error: "Invalid agent update" }, 400);
     const result = repo.updateAgent(user.orgId, path[1], parsed.data);
     if (result.error) return json({ error: result.error }, 404);
-    if (parsed.data.status === "live") {
-      repo.snapshotAgent(user.orgId, path[1], user.name, "Published");
-    }
     return json({ ok: true, id: path[1] });
   }
 
@@ -440,12 +391,6 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ path: s
   const { path } = await ctx.params;
   const user = await currentUser();
   if (!user) return json({ error: "Not signed in" }, 401);
-
-  if (path[0] === "agents" && path[1] && !path[2]) {
-    const result = repo.deleteAgent(user.orgId, path[1]);
-    if (result.error) return json({ error: result.error }, 400);
-    return json({ ok: true });
-  }
 
   if (path[0] === "departments" && path[1]) {
     const result = ws.deleteDepartment(user.orgId, path[1]);

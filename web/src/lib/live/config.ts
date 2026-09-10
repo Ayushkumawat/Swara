@@ -193,57 +193,11 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["reason"],
     },
   },
-  {
-    name: "transfer_to_agent",
-    description:
-      "Hand the caller to another AI agent on this workspace that specialises in what they need (listed under OTHER AGENTS in your instructions). Announce the transfer in one short line first, then call this. The other agent has its own knowledge base.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        agent_name: { type: Type.STRING, description: "Name of the target agent from OTHER AGENTS" },
-        reason: { type: Type.STRING, description: "What the caller needs, in one line, so the next agent has context" },
-      },
-      required: ["agent_name", "reason"],
-    },
-  },
-  {
-    name: "end_call",
-    description:
-      "End the call. Use when the caller's need is fully handled and they have nothing else, when they say goodbye, or when they ask to hang up. Say one short goodbye BEFORE calling this; after it the line closes.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        reason: { type: Type.STRING, description: "Why the call is ending, e.g. 'resolved', 'caller said goodbye'" },
-      },
-      required: ["reason"],
-    },
-  },
-];
-
-export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
-  {
-    name: "note_setup_answer",
-    description: "Save a fact you just learned from the business owner while designing their agents.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        topic: { type: Type.STRING, description: "e.g. business_type, hours, treatments, departments, escalation" },
-        answer: { type: Type.STRING },
-      },
-      required: ["topic", "answer"],
-    },
-  },
-  {
-    name: "apply_setup_plan",
-    description: "Create the agreed agents, departments, knowledge and transfers. Call only after they said yes.",
-    parameters: { type: Type.OBJECT, properties: {} },
-  },
 ];
 
 export type LiveSessionOptions = {
   systemInstruction: string;
   voice?: string;
-  extraTools?: FunctionDeclaration[];
   /**
    * Handle from a previous connection's `sessionResumptionUpdate`. Passing it
    * makes the server restore that conversation's context instead of starting
@@ -271,7 +225,6 @@ export function buildLiveConfig({
   systemInstruction,
   voice = DEFAULT_VOICE,
   resumeHandle,
-  extraTools,
 }: LiveSessionOptions): LiveConnectConfig {
   return {
     responseModalities: [Modality.AUDIO],
@@ -279,12 +232,19 @@ export function buildLiveConfig({
       voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
     },
     systemInstruction: { parts: [{ text: systemInstruction }] },
+    // Both directions: the caller transcript drives QA scoring and the
+    // complaint audit trail, the agent transcript is what supervisors read
+    // when they take over a call mid-conversation.
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: VAD_CONFIG },
-    tools: [{ functionDeclarations: [...TOOL_DECLARATIONS, ...(extraTools ?? [])] }],
+    tools: [{ functionDeclarations: [...TOOL_DECLARATIONS] }],
     contextWindowCompression: COMPRESSION_CONFIG,
     thinkingConfig: THINKING_CONFIG,
+    // Always on. An empty object is the "enabled" signal, which asks the
+    // server to start issuing handles; a handle present means "restore that
+    // conversation". Enabling it costs nothing when unused, and the 10-minute
+    // connection ceiling means any call worth having outlives one socket.
     sessionResumption: resumeHandle ? { handle: resumeHandle } : {},
   };
 }

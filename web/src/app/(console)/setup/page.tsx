@@ -12,7 +12,6 @@ import { Field, Tabs, TextInput } from "@/components/ui/controls";
 import { QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
-import { SwaraCoach } from "@/components/setup/swara-coach";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import {
   qk,
@@ -25,10 +24,9 @@ import {
 } from "@/lib/api/hooks";
 import type { AppointmentType, Department, TransferTarget } from "@/lib/api/schemas";
 
-type Tab = "swara" | "playbook" | "departments" | "transfers" | "appointments" | "knowledge" | "orders";
+type Tab = "playbook" | "departments" | "transfers" | "appointments" | "knowledge" | "orders";
 
 const TABS = [
-  { value: "swara" as const, label: "Swara" },
   { value: "playbook" as const, label: "Business" },
   { value: "departments" as const, label: "Departments" },
   { value: "transfers" as const, label: "Transfers" },
@@ -38,16 +36,15 @@ const TABS = [
 ];
 
 export default function SetupPage() {
-  const [tab, setTab] = useState<Tab>("swara");
+  const [tab, setTab] = useState<Tab>("playbook");
 
   return (
     <>
       <PageHead
         title="Workspace setup"
-        sub="Talk to Swara to design the agents, or fill the desks yourself. Transfers need a person, bookings need slot types, each agent keeps its own knowledge."
+        sub="The details each feature needs before it can run — transfers need a person, bookings need slot types, complaints need departments"
       />
       <Tabs tabs={TABS} value={tab} onChange={setTab} className="mb-4" />
-      {tab === "swara" ? <SwaraCoach /> : null}
       {tab === "playbook" ? <PlaybookTab /> : null}
       {tab === "departments" ? <DepartmentsTab /> : null}
       {tab === "transfers" ? <TransfersTab /> : null}

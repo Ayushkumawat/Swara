@@ -44,9 +44,6 @@ export type LiveEvents = {
   /** Fires when the agent uses a tool mid-call, so the UI can show the work
    *  ("Looking up order…") instead of unexplained silence. */
   onTool?: (name: string) => void;
-  /** The agent called end_call. Hang up after the goodbye audio has a beat
-   *  to finish — the model is instructed to speak first, then invoke. */
-  onHangup?: () => void;
   /** Mic could not be opened. The session still starts; the caller types. */
   onMicUnavailable?: (detail: string) => void;
   onError: (message: string) => void;
@@ -260,14 +257,10 @@ export class LiveVoiceSession {
             body: JSON.stringify({ callId: this.callId, name: call.name, args: call.args ?? {} }),
           });
           const payload = await res.json();
-          const result = res.ok ? payload.result : { error: payload.error ?? "Tool failed" };
-          if (result && typeof result === "object" && (result as { hangup?: boolean }).hangup) {
-            this.events.onHangup?.();
-          }
           return {
             id: call.id,
             name: call.name,
-            response: result,
+            response: res.ok ? payload.result : { error: payload.error ?? "Tool failed" },
           };
         } catch {
           // The model is mid-sentence waiting on this. An error payload it can

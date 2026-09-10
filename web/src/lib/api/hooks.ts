@@ -36,7 +36,6 @@ export const qk = {
   transfers: ["setup", "transfers"] as const,
   appointments: ["setup", "appointments"] as const,
   connectors: ["setup", "connectors"] as const,
-  setupChat: ["setup", "chat"] as const,
   templates: ["agents", "templates"] as const,
   campaignContacts: (id: string) => ["campaigns", id, "contacts"] as const,
 };
@@ -140,9 +139,6 @@ export const useAppointmentTypes = () =>
 
 export const useConnectors = () =>
   useQuery({ queryKey: qk.connectors, queryFn: endpoints.connectors });
-
-export const useSetupChat = () =>
-  useQuery({ queryKey: qk.setupChat, queryFn: endpoints.setupChat });
 
 export const useAgentTemplates = () =>
   useQuery({ queryKey: qk.templates, queryFn: endpoints.templates });

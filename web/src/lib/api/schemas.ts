@@ -149,8 +149,6 @@ export const AgentVersionSchema = z.object({
   author: z.string(),
   createdAt: z.string(),
   isLive: z.boolean(),
-  agentId: z.string().nullable().optional(),
-  hasSnapshot: z.boolean().optional(),
 });
 export type AgentVersion = z.infer<typeof AgentVersionSchema>;
 
@@ -162,7 +160,6 @@ export const KnowledgeDocSchema = z.object({
   chunks: z.number(),
   status: z.enum(["indexed", "indexing", "failed"]),
   updatedAt: z.string(),
-  agentId: z.string().nullable().optional(),
 });
 export type KnowledgeDoc = z.infer<typeof KnowledgeDocSchema>;
 
@@ -426,65 +423,6 @@ export const PlaybookSchema = z.object({
   complaintSlaHours: z.number(),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
-
-export const SetupFactSchema = z.object({
-  topic: z.string(),
-  answer: z.string(),
-});
-export const SetupMessageSchema = z.object({
-  role: z.enum(["user", "assistant"]),
-  text: z.string(),
-  at: z.string(),
-});
-export const SetupPlanAgentSchema = z.object({
-  name: z.string(),
-  intent: IntentSchema.catch("other"),
-  role: z.string().default(""),
-  why: z.string().default(""),
-  knowledge: z.string().default(""),
-  transfersTo: z.array(z.string()).default([]),
-});
-export const SetupPlanSchema = z.object({
-  summary: z.string().default(""),
-  businessType: z.string().default(""),
-  hours: z.string().default(""),
-  transferPolicy: z.string().default(""),
-  bookingPolicy: z.string().default(""),
-  departments: z
-    .array(z.object({ name: z.string(), keywords: z.array(z.string()).default([]) }))
-    .default([]),
-  transfers: z
-    .array(
-      z.object({
-        name: z.string(),
-        role: z.string().default(""),
-        phone: z.string().default(""),
-        whenToUse: z.string().default(""),
-      }),
-    )
-    .default([]),
-  appointments: z
-    .array(
-      z.object({
-        name: z.string(),
-        durationMin: z.number().default(30),
-        hours: z.string().optional(),
-        notes: z.string().optional(),
-      }),
-    )
-    .default([]),
-  agents: z.array(SetupPlanAgentSchema).default([]),
-  receptionist: z.boolean().default(true),
-});
-export type SetupPlan = z.infer<typeof SetupPlanSchema>;
-export const SetupChatSchema = z.object({
-  messages: z.array(SetupMessageSchema),
-  facts: z.array(SetupFactSchema),
-  plan: SetupPlanSchema.nullable(),
-  appliedAt: z.string().nullable(),
-  reply: z.string().optional(),
-});
-export type SetupChat = z.infer<typeof SetupChatSchema>;
 
 export const ConnectorRowSchema = z.object({
   id: z.string(),

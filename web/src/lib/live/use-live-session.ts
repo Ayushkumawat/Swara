@@ -20,11 +20,6 @@ const TOOL_LABEL: Record<string, string> = {
   register_complaint: "Registering complaint",
   book_slot: "Booking slot",
   search_knowledge: "Searching knowledge base",
-  transfer_to_human: "Connecting to a person",
-  transfer_to_agent: "Handing to another agent",
-  end_call: "Ending the call",
-  note_setup_answer: "Saving what you said",
-  apply_setup_plan: "Creating agents",
 };
 
 export function useLiveSession() {
@@ -74,12 +69,6 @@ export function useLiveSession() {
       onMicUnavailable: () => {
         setHasMic(false);
         setMuted(true);
-      },
-      onHangup: () => {
-        setToolActivity("Ending call");
-        window.setTimeout(() => {
-          if (sessionRef.current === session) void session.stop();
-        }, 1600);
       },
       onError: setError,
     });

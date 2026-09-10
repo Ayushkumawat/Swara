@@ -198,7 +198,6 @@ export async function ingestKnowledgeDoc(
   name: string,
   kind: "pdf" | "url" | "csv" | "text",
   text: string,
-  agentId?: string | null,
 ): Promise<{ id: string; chunks: number }> {
   const db = getDb();
   const { uid, nowIso } = await import("./db");
@@ -223,8 +222,8 @@ export async function ingestKnowledgeDoc(
   const docId = uid("doc");
   const sizeKb = Math.max(1, Math.round(Buffer.byteLength(text, "utf8") / 1024));
   db.prepare(
-    "INSERT INTO knowledge_docs (id, org_id, agent_id, name, kind, size_label, status, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'indexed', ?)",
-  ).run(docId, orgId, agentId ?? null, name, kind, `${sizeKb} KB`, nowIso());
+    "INSERT INTO knowledge_docs (id, org_id, name, kind, size_label, status, updated_at) VALUES (?, ?, ?, ?, ?, 'indexed', ?)",
+  ).run(docId, orgId, name, kind, `${sizeKb} KB`, nowIso());
 
   const insert = db.prepare(
     "INSERT INTO knowledge_chunks (doc_id, seq, content, embedding) VALUES (?, ?, ?, ?)",
@@ -242,24 +241,15 @@ export async function ingestKnowledgeDoc(
  * similarity when vectors exist, term overlap otherwise — an agent that says
  * "I can't find that" beats one whose tool errors mid-call.
  */
-export async function searchKnowledge(orgId: string, query: string, limit = 4, agentId?: string | null) {
+export async function searchKnowledge(orgId: string, query: string, limit = 4) {
   const db = getDb();
-  const chunks = (
-    agentId
-      ? db.prepare(
-          `SELECT c.id, c.content, c.embedding, k.name doc, k.agent_id FROM knowledge_chunks c
-           JOIN knowledge_docs k ON k.id=c.doc_id
-           WHERE k.org_id=? AND (k.agent_id=? OR k.agent_id IS NULL)`,
-        ).all(orgId, agentId)
-      : db.prepare(
-          `SELECT c.id, c.content, c.embedding, k.name doc, k.agent_id FROM knowledge_chunks c
-           JOIN knowledge_docs k ON k.id=c.doc_id WHERE k.org_id=?`,
-        ).all(orgId)
-  ) as { id: number; content: string; embedding: Buffer | null; doc: string; agent_id: string | null }[];
+  const chunks = db
+    .prepare(
+      `SELECT c.id, c.content, c.embedding, k.name doc FROM knowledge_chunks c
+       JOIN knowledge_docs k ON k.id=c.doc_id WHERE k.org_id=?`,
+    )
+    .all(orgId) as { id: number; content: string; embedding: Buffer | null; doc: string }[];
   if (chunks.length === 0) return [];
-
-  const ownFirst = (score: number, agent_id: string | null) =>
-    score + (agentId && agent_id === agentId ? 0.15 : 0);
 
   const withVectors = chunks.filter((c) => c.embedding);
   if (withVectors.length > 0) {
@@ -269,10 +259,7 @@ export async function searchKnowledge(orgId: string, query: string, limit = 4, a
         .map((c) => ({
           doc: c.doc,
           content: c.content,
-          score: ownFirst(
-            cosine(queryVector, new Float32Array(c.embedding!.buffer, c.embedding!.byteOffset, c.embedding!.byteLength / 4)),
-            c.agent_id,
-          ),
+          score: cosine(queryVector, new Float32Array(c.embedding!.buffer, c.embedding!.byteOffset, c.embedding!.byteLength / 4)),
         }))
         .sort((x, y) => y.score - x.score)
         .slice(0, limit);
@@ -284,7 +271,7 @@ export async function searchKnowledge(orgId: string, query: string, limit = 4, a
     .map((c) => ({
       doc: c.doc,
       content: c.content,
-      score: ownFirst(terms.filter((t) => c.content.toLowerCase().includes(t)).length, c.agent_id),
+      score: terms.filter((t) => c.content.toLowerCase().includes(t)).length,
     }))
     .filter((c) => c.score > 0)
     .sort((x, y) => y.score - x.score)

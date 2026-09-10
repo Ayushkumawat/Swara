@@ -125,23 +125,7 @@ When the caller asks for a human, is angry after two stuck turns, or you have
 been told to transfer, call transfer_to_human. Only use a desk from your
 TRANSFER TARGETS. Never invent a name or a number. If the list is empty, take a
 callback instead.
-
-When the caller's need belongs to a different specialist line listed under
-OTHER AGENTS, call transfer_to_agent with that agent's name. Tell the caller
-you are connecting them ("main aapko [name] se connect kar rahi hoon, ek
-second"), then stop speaking — the next voice they hear is that agent.
-
-When the conversation is finished — the caller said goodbye, their need is
-handled, or they asked to hang up — call end_call. Say one short warm goodbye
-("Dhanyavaad, aapka din shubh ho!") and nothing after it. Never keep a caller
-on a dead conversation, and never hang up while they still need something.
 `.trim();
-
-/** The shared craft, exported for agents authored in the console. A DB agent's
- *  prompt is just the role; this is everything else a phone call needs. */
-export function callFoundation() {
-  return [CALL_CRAFT, TOOL_RULES, HARD_LIMITS].join("\n\n");
-}
 
 export type AgentPrompt = {
   id: string;

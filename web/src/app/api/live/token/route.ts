@@ -19,7 +19,6 @@ import {
   LIVE_API_VERSION,
   LIVE_MODEL,
   LIVE_VOICES,
-  SETUP_TOOL_DECLARATIONS,
   TOKEN_SESSION_START_TTL_MS,
   TOKEN_TTL_MS,
   buildLiveConfig,
@@ -49,7 +48,6 @@ const PERSONA_INTENT: Record<string, string> = {
   ag_lead: "sales_enquiry",
   ag_booking: "booking",
   ag_cod: "payment_reminder",
-  ag_swara: "other",
 };
 
 export async function POST(request: Request) {
@@ -95,7 +93,6 @@ export async function POST(request: Request) {
             systemInstruction,
             voice: voiceName,
             resumeHandle,
-            extraTools: agentId === "ag_swara" ? SETUP_TOOL_DECLARATIONS : undefined,
           }),
         },
         httpOptions: { apiVersion: LIVE_API_VERSION },
