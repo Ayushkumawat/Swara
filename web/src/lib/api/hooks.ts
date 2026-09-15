@@ -33,6 +33,7 @@ export const qk = {
   invoices: ["billing", "invoices"] as const,
   me: ["auth", "me"] as const,
   playbook: ["setup", "playbook"] as const,
+  setupStatus: ["setup", "status"] as const,
   transfers: ["setup", "transfers"] as const,
   appointments: ["setup", "appointments"] as const,
   connectors: ["setup", "connectors"] as const,
@@ -130,6 +131,9 @@ export const useMe = () =>
 
 export const usePlaybook = () =>
   useQuery({ queryKey: qk.playbook, queryFn: endpoints.playbook });
+
+export const useSetupStatus = () =>
+  useQuery({ queryKey: qk.setupStatus, queryFn: endpoints.setupStatus });
 
 export const useTransfers = () =>
   useQuery({ queryKey: qk.transfers, queryFn: endpoints.transfers });

@@ -193,11 +193,163 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
       required: ["reason"],
     },
   },
+  {
+    name: "handoff_to_agent",
+    description:
+      "Pass the caller to another of this business's agents that owns the topic (for example refunds, sales, bookings). Only use an agent named in your AGENT DIRECTORY. Say one sentence to the caller first, then call this. The other agent continues the call with your summary.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agent_name: { type: Type.STRING, description: "Exact agent name from the AGENT DIRECTORY" },
+        summary: {
+          type: Type.STRING,
+          description: "Two lines: who the caller is, what they need, anything already collected (name, phone, order id)",
+        },
+      },
+      required: ["agent_name", "summary"],
+    },
+  },
+  {
+    name: "end_call",
+    description:
+      "Hang up. Call this ONLY after you have said your closing line and the caller has nothing more. Never call it mid-task.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        outcome: {
+          type: Type.STRING,
+          enum: ["resolved", "escalated", "callback", "no_answer", "declined"],
+          description: "How the call ended from the business's point of view",
+        },
+      },
+      required: ["outcome"],
+    },
+  },
+];
+
+/**
+ * Tools only the Swara setup assistant carries. They write workspace rows —
+ * departments, transfer desks, appointment types, knowledge, the agent plan —
+ * so a business can be configured by talking rather than by filling forms.
+ */
+export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
+  {
+    name: "get_setup_status",
+    description: "Read what the workspace already has configured, so you never ask for something that exists.",
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: "save_playbook",
+    description: "Save what the business does, its hours, its use case, and its policies. Call as soon as you learn each fact; partial saves are fine.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        business_type: { type: Type.STRING, description: "One line: what they do and for whom" },
+        use_case: {
+          type: Type.STRING,
+          enum: ["clinic", "ecommerce", "customer_care", "sales", "civic", "hospitality", "education", "other"],
+        },
+        hours: { type: Type.STRING },
+        has_sales: { type: Type.BOOLEAN, description: "Do they also want outbound sales / lead follow-up?" },
+        human_escalation: { type: Type.BOOLEAN, description: "Is there any human a call can be transferred to?" },
+        transfer_policy: { type: Type.STRING, description: "When to transfer, in one or two sentences" },
+        booking_policy: { type: Type.STRING },
+        complaint_sla_hours: { type: Type.NUMBER },
+      },
+    },
+  },
+  {
+    name: "add_department",
+    description: "Create a department that will own follow-up work. Include the words a caller would use so complaints route to it.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "add_transfer_target",
+    description: "Add a human the agents may transfer to. Needs a real phone number — ask for it and read it back.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        role: { type: Type.STRING },
+        phone: { type: Type.STRING, description: "E.164 or 10-digit Indian mobile" },
+        hours: { type: Type.STRING },
+        when_to_use: { type: Type.STRING },
+        department: { type: Type.STRING, description: "Department name, if it belongs to one" },
+      },
+      required: ["name", "role", "phone", "when_to_use"],
+    },
+  },
+  {
+    name: "add_appointment_type",
+    description: "Add something that can be booked: a consultation, a delivery slot, a demo.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        duration_min: { type: Type.NUMBER },
+        hours: { type: Type.STRING },
+        location: { type: Type.STRING },
+        notes: { type: Type.STRING },
+      },
+      required: ["name", "duration_min"],
+    },
+  },
+  {
+    name: "add_knowledge",
+    description: "Save a policy, price list, FAQ or process the agents must quote from instead of guessing. Write it out fully in `text`.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING },
+        text: { type: Type.STRING, description: "At least a paragraph, in the business's own terms" },
+      },
+      required: ["name", "text"],
+    },
+  },
+  {
+    name: "propose_agents",
+    description:
+      "Once you understand the use case, propose the set of agents that covers it end to end. Each agent gets a name, a job, direction, and which other agents it hands off to. The console shows this plan for approval and builds the flows.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        brief: { type: Type.STRING, description: "The business and what the agents must handle, in your words" },
+        agents: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              job: { type: Type.STRING, description: "What this agent does on a call, in 2-3 sentences" },
+              intent: {
+                type: Type.STRING,
+                enum: ["order_status", "delivery_reschedule", "complaint", "sales_enquiry", "booking", "payment_reminder", "feedback", "other"],
+              },
+              direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
+              hands_off_to: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Names of other agents in this plan" },
+              is_front_door: { type: Type.BOOLEAN, description: "Answers the main number and routes" },
+            },
+            required: ["name", "job", "intent", "direction"],
+          },
+        },
+      },
+      required: ["brief", "agents"],
+    },
+  },
 ];
 
 export type LiveSessionOptions = {
   systemInstruction: string;
   voice?: string;
+  /** Extra tools for this session (the setup assistant's writers). */
+  extraTools?: FunctionDeclaration[];
   /**
    * Handle from a previous connection's `sessionResumptionUpdate`. Passing it
    * makes the server restore that conversation's context instead of starting
@@ -225,6 +377,7 @@ export function buildLiveConfig({
   systemInstruction,
   voice = DEFAULT_VOICE,
   resumeHandle,
+  extraTools = [],
 }: LiveSessionOptions): LiveConnectConfig {
   return {
     responseModalities: [Modality.AUDIO],
@@ -238,7 +391,7 @@ export function buildLiveConfig({
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: VAD_CONFIG },
-    tools: [{ functionDeclarations: [...TOOL_DECLARATIONS] }],
+    tools: [{ functionDeclarations: [...TOOL_DECLARATIONS, ...extraTools] }],
     contextWindowCompression: COMPRESSION_CONFIG,
     thinkingConfig: THINKING_CONFIG,
     // Always on. An empty object is the "enabled" signal, which asks the
@@ -254,7 +407,7 @@ export function buildLiveConfig({
  * explicit language code, so multilingual behaviour is prompt-level, not
  * config-level. This is appended to every agent's instruction.
  */
-export function languageDirective(_languages?: string[]) {
+export function languageDirective() {
   // Language is detected from the caller's speech. Asking "Hindi or English?"
   // is a hold-menu behaviour and the thing Indian callers hang up on.
   return [

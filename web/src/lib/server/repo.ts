@@ -419,14 +419,55 @@ export function startCall(params: {
   agentName: string;
   intent: string;
   source: "browser" | "phone";
+  /** Caller's number for phone calls. */
+  phone?: string;
+  direction?: "inbound" | "outbound";
 }) {
   const id = uid("call");
   db().prepare(
     `INSERT INTO calls (id, org_id, agent_id, agent_name, phone, direction, intent, source, status, started_at)
-     VALUES (?, ?, ?, ?, ?, 'inbound', ?, ?, 'live', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'live', ?)`,
   ).run(id, params.orgId, params.agentId, params.agentName,
-    params.source === "browser" ? "browser test" : "unknown", params.intent, params.source, nowIso());
+    params.phone ?? (params.source === "browser" ? "browser test" : "unknown"),
+    params.direction ?? "inbound", params.intent, params.source, nowIso());
   return id;
+}
+
+/** A handoff mid-call: the row now belongs to the agent that took over. */
+export function reassignCall(orgId: string, callId: string, agentId: string, agentName: string) {
+  db().prepare("UPDATE calls SET agent_id=?, agent_name=? WHERE id=? AND org_id=?")
+    .run(agentId, agentName, callId, orgId);
+}
+
+/** Streaming transcript for a live phone call, so the Live board can show it
+ *  before the call completes. */
+export function updateLiveTranscript(orgId: string, callId: string, transcript: { role: string; text: string }[]) {
+  db().prepare("UPDATE calls SET transcript=? WHERE id=? AND org_id=? AND status='live'")
+    .run(JSON.stringify(transcript.slice(-400)), callId, orgId);
+}
+
+/** Which agent answers this number, or null when nothing is assigned. */
+export function agentForNumber(e164: string) {
+  const digits = e164.replace(/\D/g, "");
+  const row = db().prepare(
+    `SELECT n.org_id, n.assigned_agent_id agent_id FROM numbers n
+     WHERE n.assigned_agent_id IS NOT NULL
+       AND replace(replace(replace(n.e164,'+',''),' ',''),'-','') LIKE ?
+     LIMIT 1`,
+  ).get(`%${digits.slice(-10)}`) as { org_id: string; agent_id: string } | undefined;
+  return row ? { orgId: row.org_id, agentId: row.agent_id } : null;
+}
+
+/** Fallback when a number has no assignment: a live agent that takes inbound
+ *  calls — a front door if the plan built one, never an outbound-only dialer. */
+export function firstLiveAgent(orgId: string) {
+  const row = db().prepare(
+    `SELECT id FROM agents WHERE org_id=? AND direction IN ('inbound','both')
+     ORDER BY CASE status WHEN 'live' THEN 0 WHEN 'testing' THEN 1 ELSE 2 END,
+              CASE WHEN intent='other' THEN 0 ELSE 1 END, updated_at
+     LIMIT 1`,
+  ).get(orgId) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 export function completeCall(params: {
@@ -885,6 +926,46 @@ export function updateAgent(orgId: string, id: string, data: {
     (data.nodes && data.nodes.length) || JSON.parse(current.nodes as string).length ? "graph" : "prompt",
     nowIso(), id, orgId,
   );
+  return { error: null } as const;
+}
+
+/**
+ * Removes an agent and everything that points at it: number assignments,
+ * voice assignments, and handoff nodes in other agents' flows (rewritten to
+ * plain End nodes so no flow is left calling an agent that no longer exists).
+ */
+export function deleteAgent(orgId: string, id: string) {
+  const d = db();
+  const row = d.prepare("SELECT id FROM agents WHERE id=? AND org_id=?").get(id, orgId);
+  if (!row) return { error: "No such agent" } as const;
+  const running = (d.prepare(
+    "SELECT COUNT(*) n FROM campaigns WHERE org_id=? AND agent_id=? AND status IN ('running','scheduled')",
+  ).get(orgId, id) as { n: number }).n;
+  if (running) return { error: `${running} campaign(s) still use this agent — pause them first` } as const;
+
+  const others = d.prepare("SELECT id, nodes FROM agents WHERE org_id=? AND id!=?").all(orgId, id) as {
+    id: string;
+    nodes: string;
+  }[];
+  const fix = d.prepare("UPDATE agents SET nodes=?, updated_at=? WHERE id=? AND org_id=?");
+  for (const o of others) {
+    const nodes = JSON.parse(o.nodes || "[]") as { kind: string; config?: Record<string, unknown>; title: string }[];
+    let touched = false;
+    for (const n of nodes) {
+      if (n.kind === "handoff" && n.config?.agentId === id) {
+        n.kind = "end";
+        n.title = "Close (handoff target removed)";
+        n.config = { hangUp: true };
+        touched = true;
+      }
+    }
+    if (touched) fix.run(JSON.stringify(nodes), nowIso(), o.id, orgId);
+  }
+
+  d.prepare("UPDATE numbers SET assigned_agent_id=NULL, assigned_agent_name=NULL WHERE org_id=? AND assigned_agent_id=?").run(orgId, id);
+  d.prepare("UPDATE voices SET assigned_agent_id=NULL WHERE org_id=? AND assigned_agent_id=?").run(orgId, id);
+  d.prepare("UPDATE campaigns SET agent_id=NULL, agent_name='Unassigned' WHERE org_id=? AND agent_id=?").run(orgId, id);
+  d.prepare("DELETE FROM agents WHERE id=? AND org_id=?").run(id, orgId);
   return { error: null } as const;
 }
 

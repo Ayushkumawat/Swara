@@ -199,3 +199,39 @@ Not everything in §4 ships at once. Recommended sequence:
 4. **Trust/scale features:** full RBAC, voice biometrics, MCP server, audit exports for regulated verticals
 
 Compliance (DLT registration) and the copilot-editing affordance are the two things worth front-loading even though they feel like "later" features — DLT because it blocks the first legal commercial call, and the copilot bar because it's the single most defensible differentiator identified in the entire competitive research and is easy to under-invest in if left for "later."
+
+---
+
+## 7. Implementation status and how to run
+
+What exists in this repo, mapped to the spec above. Details in `docs/`.
+
+| Area | State | Where |
+|---|---|---|
+| Console (all §4 screens) | Real backend on SQLite, self-seeding demo org (`demo@swara.in` / `swara-demo`) | `web/`, `docs/backend.md` |
+| Voice engine | Gemini Live native audio, auto language detection, tools executed server-side | `web/src/lib/live/`, `docs/live-api.md` |
+| Agents & Flows | Node-graph is the data model; flows compile into the prompt. Drag, connect, delete, inspector, undo, autosave. `handoff_to_agent` and `end_call` make flows act. | `web/src/lib/agents/flow.ts`, `web/src/components/flow/` |
+| Swara (setup agent) | Female-voiced consultant that interviews the owner, writes the workspace (playbook, departments, transfers, appointments, knowledge) through tools, and proposes agents. "Build with Swara" turns the plan into agents. | `web/src/lib/agents/swara.ts`, `web/src/lib/server/planner.ts`, `web/src/components/agents/build-with-swara.tsx` |
+| Workspace setup | Use-case profile (clinic, e-commerce, customer care, sales, civic, hospitality, education) reorders and marks what each business needs; Swara panel fills it live. | `web/src/app/(console)/setup/page.tsx`, `web/src/lib/agents/use-cases.ts` |
+| Telephony | Plivo audio-streaming bridge: inbound by number assignment, outbound "Call me now" and campaigns, tools on the phone, end/handoff/transfer, per-call metering. | `telephony/bridge.py`, `docs/telephony.md` |
+| Not yet | Call recording + consent artefacts on the phone leg, live-listen/takeover audio, DLT status API, voice biometrics | — |
+
+**Run**
+
+```bash
+# console
+cd web && cp .env.example .env.local   # GEMINI_API_KEY, TELEPHONY_* (see file)
+npm install && npm run dev             # http://localhost:3000
+
+# phone calls (separate process; Plivo account + public URL needed)
+cd telephony && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && .venv/bin/python bridge.py   # then follow docs/telephony.md
+```
+
+**Verify**
+
+```bash
+cd web && npx tsc --noEmit && npx eslint src     # types + lint
+npm run live:smoke && npm run live:smoke:resume  # token → socket → audio, resumption
+python3 -m py_compile telephony/bridge.py agent/live_session.py
+```

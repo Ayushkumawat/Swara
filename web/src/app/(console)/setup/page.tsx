@@ -1,18 +1,25 @@
 "use client";
 
-import { useState } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { ArrowRight, Check, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { Field, Tabs, TextInput } from "@/components/ui/controls";
-import { QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
+import { Field, Tabs, TextInput, Toggle } from "@/components/ui/controls";
+import { CardSkeleton, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
+import { SwaraOrb } from "@/components/agents/build-with-swara";
 import { IS_MOCK, mutations } from "@/lib/api/client";
+import { SWARA_AGENT_ID, SWARA_VOICE } from "@/lib/agents/swara";
+import { USE_CASES, type SetupArea } from "@/lib/agents/use-cases";
 import {
   qk,
   useAppointmentTypes,
@@ -20,38 +27,189 @@ import {
   useDepartments,
   useKnowledge,
   usePlaybook,
+  useSetupStatus,
   useTransfers,
 } from "@/lib/api/hooks";
-import type { AppointmentType, Department, TransferTarget } from "@/lib/api/schemas";
+import { UseCaseSchema, type AppointmentType, type Department, type Playbook, type TransferTarget, type UseCase } from "@/lib/api/schemas";
+import { cn } from "@/lib/utils";
 
-type Tab = "playbook" | "departments" | "transfers" | "appointments" | "knowledge" | "orders";
+const InlineCallPanel = dynamic(() => import("@/components/live/call-panel").then((m) => m.InlineCallPanel), {
+  loading: () => <CardSkeleton height={220} />,
+});
 
-const TABS = [
-  { value: "playbook" as const, label: "Business" },
-  { value: "departments" as const, label: "Departments" },
-  { value: "transfers" as const, label: "Transfers" },
-  { value: "appointments" as const, label: "Appointments" },
-  { value: "knowledge" as const, label: "Knowledge" },
-  { value: "orders" as const, label: "Orders" },
-];
+type Tab = SetupArea;
+
+const TAB_LABEL: Record<Tab, string> = {
+  playbook: "Business",
+  departments: "Departments",
+  transfers: "Transfers",
+  appointments: "Appointments",
+  knowledge: "Knowledge",
+  orders: "Orders",
+};
 
 export default function SetupPage() {
   const [tab, setTab] = useState<Tab>("playbook");
+  const playbook = usePlaybook();
+  const status = useSetupStatus();
+  const qc = useQueryClient();
+  const router = useRouter();
+  const [swaraOpen, setSwaraOpen] = useState(true);
+  const [lastSaved, setLastSaved] = useState<string | null>(null);
+
+  const useCase = (playbook.data?.useCase ?? "other") as UseCase;
+  const profile = USE_CASES[useCase];
+
+  // Tabs in the use case's priority order, so a clinic sees Appointments
+  // before Departments and customer care sees the reverse.
+  const tabs = useMemo(() => {
+    const order: Tab[] = ["playbook", ...profile.focus.filter((f) => f !== "playbook")];
+    for (const t of Object.keys(TAB_LABEL) as Tab[]) if (!order.includes(t)) order.push(t);
+    return order.map((value) => ({ value, label: TAB_LABEL[value] }));
+  }, [profile]);
+
+  const refreshAll = () => {
+    void qc.invalidateQueries({ queryKey: ["setup"] });
+    void qc.invalidateQueries({ queryKey: qk.departments });
+    void qc.invalidateQueries({ queryKey: qk.knowledge });
+    void qc.invalidateQueries({ queryKey: qk.agents });
+  };
 
   return (
     <>
       <PageHead
         title="Workspace setup"
-        sub="The details each feature needs before it can run — transfers need a person, bookings need slot types, complaints need departments"
+        sub="Everything the agents need before they can act — or just tell Swara and she fills it in"
+        actions={
+          <Button variant={swaraOpen ? "ghost" : "primary"} onClick={() => setSwaraOpen((v) => !v)}>
+            <Sparkles className="size-3.5" />
+            {swaraOpen ? "Hide Swara" : "Talk to Swara"}
+          </Button>
+        }
       />
-      <Tabs tabs={TABS} value={tab} onChange={setTab} className="mb-4" />
-      {tab === "playbook" ? <PlaybookTab /> : null}
-      {tab === "departments" ? <DepartmentsTab /> : null}
-      {tab === "transfers" ? <TransfersTab /> : null}
-      {tab === "appointments" ? <AppointmentsTab /> : null}
-      {tab === "knowledge" ? <KnowledgeSetupTab /> : null}
-      {tab === "orders" ? <OrdersTab /> : null}
+
+      <div className={cn("grid gap-3.5", swaraOpen && "lg:grid-cols-[360px_1fr]")}>
+        <AnimatePresence initial={false}>
+          {swaraOpen ? (
+            <motion.div
+              key="swara"
+              initial={{ opacity: 0, x: -12 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -12 }}
+              transition={{ duration: 0.22 }}
+              className="space-y-3.5 lg:sticky lg:top-[76px] lg:self-start"
+            >
+              <Card interactive={false}>
+                <div className="mb-3 flex items-start gap-3">
+                  <SwaraOrb size={40} />
+                  <div>
+                    <div className="font-[family-name:var(--font-display)] text-[14.5px] font-semibold text-t1">Set up by talking</div>
+                    <p className="mt-0.5 text-[11.5px] leading-relaxed text-t3">
+                      Swara asks what you do, who handles what, who a call can reach, what can be booked — and saves
+                      each answer here as you speak. She raises the edge cases you have not thought of.
+                    </p>
+                  </div>
+                </div>
+                <InlineCallPanel
+                  agentId={SWARA_AGENT_ID}
+                  agentName="Swara"
+                  fixedVoice={SWARA_VOICE}
+                  startLabel="Start talking to Swara"
+                  handlers={{
+                    onToolResult: (name, result) => {
+                      refreshAll();
+                      if (typeof result.error !== "string") setLastSaved(name);
+                      if (name === "propose_agents") {
+                        toast("Swara proposed your agents", {
+                          description: "Open Agents & flows to review and create them.",
+                          action: { label: "Open", onClick: () => router.push("/agents") },
+                        });
+                      }
+                    },
+                  }}
+                />
+                <AnimatePresence>
+                  {lastSaved ? (
+                    <motion.p
+                      key={lastSaved}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="mt-2 flex items-center gap-1.5 text-[11px] text-cyan"
+                    >
+                      <Check className="size-3" /> Saved from the conversation — the forms on the right update live.
+                    </motion.p>
+                  ) : null}
+                </AnimatePresence>
+              </Card>
+
+              <ReadinessCard status={status.data} useCase={useCase} onJump={setTab} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <div className="min-w-0">
+          <Tabs tabs={tabs} value={tab} onChange={setTab} className="mb-4" />
+          {tab === "playbook" ? <PlaybookTab /> : null}
+          {tab === "departments" ? <DepartmentsTab /> : null}
+          {tab === "transfers" ? <TransfersTab /> : null}
+          {tab === "appointments" ? <AppointmentsTab /> : null}
+          {tab === "knowledge" ? <KnowledgeSetupTab /> : null}
+          {tab === "orders" ? <OrdersTab /> : null}
+        </div>
+      </div>
     </>
+  );
+}
+
+/** What is done, what is missing, in the order this use case cares about. */
+function ReadinessCard({
+  status,
+  useCase,
+  onJump,
+}: {
+  status: { departments: number; transfers: number; appointmentTypes: number; knowledge: number; connectors: number; agents: number } | undefined;
+  useCase: UseCase;
+  onJump: (t: Tab) => void;
+}) {
+  const profile = USE_CASES[useCase];
+  const rows: { area: Tab; label: string; count: number; must: boolean }[] = profile.focus
+    .filter((f) => f !== "playbook")
+    .map((area, i) => ({
+      area,
+      must: i < 2,
+      label:
+        area === "departments" ? "Departments" : area === "transfers" ? "Transfer desks" : area === "appointments" ? "Bookable types" : area === "knowledge" ? "Knowledge docs" : "Order lookup",
+      count:
+        area === "departments" ? status?.departments ?? 0 : area === "transfers" ? status?.transfers ?? 0 : area === "appointments" ? status?.appointmentTypes ?? 0 : area === "knowledge" ? status?.knowledge ?? 0 : status?.connectors ?? 0,
+    }));
+  const done = rows.filter((r) => r.count > 0).length;
+
+  return (
+    <Card interactive={false}>
+      <CardHead title="Readiness" sub={`${profile.label} · ${done}/${rows.length} in place`} />
+      <div className="space-y-1.5">
+        {rows.map((r) => (
+          <button
+            key={r.area}
+            onClick={() => onJump(r.area)}
+            className="flex w-full items-center gap-2.5 rounded-[10px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.05]"
+          >
+            <span className={cn("flex size-4 items-center justify-center rounded-full border", r.count ? "border-cyan bg-cyan/20" : r.must ? "border-amber/50" : "border-hairline")}>
+              {r.count ? <Check className="size-2.5 text-cyan" strokeWidth={3} /> : null}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-t1">{r.label}</span>
+            <span className="font-[family-name:var(--font-mono)] text-[11px] text-t3">{r.count}</span>
+            {!r.count && r.must ? <Pill tone="amber">needed</Pill> : null}
+          </button>
+        ))}
+      </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-t3">{profile.hint}</p>
+      <Link href="/agents" className="mt-3 flex items-center gap-1.5 text-[11.5px] font-medium text-cyan hover:underline">
+        {status?.agents ? `${status.agents} agent${status.agents === 1 ? "" : "s"} built` : "Build agents with Swara"}
+        <ArrowRight className="size-3" />
+      </Link>
+    </Card>
   );
 }
 
@@ -65,11 +223,12 @@ function PlaybookTab() {
       <Card interactive={false}>
         <CardHead
           title="How this business works"
-          sub="Hours, transfer rules and booking policy are injected into every agent prompt"
+          sub="The use case shapes what setup matters and what Swara builds. Hours and policies go into every agent prompt."
         />
         <QueryBoundary query={query} skeleton={<RowsSkeleton rows={5} />}>
           {(book) => (
             <PlaybookForm
+              key={JSON.stringify(book)}
               initial={book}
               busy={busy}
               onSave={async (fields) => {
@@ -77,7 +236,7 @@ function PlaybookTab() {
                 try {
                   if (!IS_MOCK) await mutations.savePlaybook(fields);
                   toast.success("Playbook saved — live on the next call");
-                  void qc.invalidateQueries({ queryKey: qk.playbook });
+                  void qc.invalidateQueries({ queryKey: ["setup"] });
                 } catch {
                   toast.error("Could not save playbook");
                 } finally {
@@ -92,73 +251,104 @@ function PlaybookTab() {
   );
 }
 
-function PlaybookForm({
-  initial,
-  busy,
-  onSave,
-}: {
-  initial: {
-    businessType: string;
-    hours: string;
-    transferPolicy: string;
-    bookingPolicy: string;
-    complaintSlaHours: number;
-  };
-  busy: boolean;
-  onSave: (fields: typeof initial) => Promise<void>;
-}) {
-  const [fields, setFields] = useState(initial);
-  const set = (key: keyof typeof fields, value: string | number) =>
-    setFields((f) => ({ ...f, [key]: value }));
+function PlaybookForm({ initial, busy, onSave }: { initial: Playbook; busy: boolean; onSave: (fields: Omit<Playbook, "orgId">) => Promise<void> }) {
+  const [fields, setFields] = useState<Omit<Playbook, "orgId">>({
+    businessType: initial.businessType,
+    hours: initial.hours,
+    transferPolicy: initial.transferPolicy,
+    bookingPolicy: initial.bookingPolicy,
+    complaintSlaHours: initial.complaintSlaHours,
+    useCase: initial.useCase,
+    hasSales: initial.hasSales,
+    humanEscalation: initial.humanEscalation,
+  });
+  const set = <K extends keyof typeof fields>(key: K, value: (typeof fields)[K]) => setFields((f) => ({ ...f, [key]: value }));
+  const profile = USE_CASES[fields.useCase];
 
   return (
-    <div className="grid gap-3.5 md:grid-cols-2">
-      <Field label="What do you do?" hint="One line the agent can say if asked who you are">
-        <TextInput
-          value={fields.businessType}
-          onChange={(v) => set("businessType", v)}
-          placeholder="D2C grocery, metro helpline, clinic…"
-        />
-      </Field>
-      <Field label="Working hours">
-        <TextInput
-          value={fields.hours}
-          onChange={(v) => set("hours", v)}
-          placeholder="10:00-19:00 IST, closed Sundays"
-        />
-      </Field>
-      <Field
-        label="When should the agent transfer?"
-        hint="Without this, and without transfer desks, the agent will not offer a human"
-      >
-        <textarea
-          value={fields.transferPolicy}
-          onChange={(e) => set("transferPolicy", e.target.value)}
-          rows={4}
-          className="glass w-full resize-y rounded-[14px] p-3.5 text-[13px] text-t1 outline-none focus:border-cyan/45"
-          placeholder="Transfer on the second stuck turn, or immediately for safety."
-        />
-      </Field>
-      <Field label="Booking rules">
-        <textarea
-          value={fields.bookingPolicy}
-          onChange={(e) => set("bookingPolicy", e.target.value)}
-          rows={4}
-          className="glass w-full resize-y rounded-[14px] p-3.5 text-[13px] text-t1 outline-none focus:border-cyan/45"
-          placeholder="Only offer slots from the appointment types list. Confirm by SMS."
-        />
-      </Field>
-      <Field label="Complaint SLA (hours)">
-        <TextInput
-          type="text"
-          value={String(fields.complaintSlaHours)}
-          onChange={(v) => set("complaintSlaHours", Number(v) || 24)}
-        />
-      </Field>
-      <div className="flex items-end">
-        <Button variant="primary" disabled={busy} onClick={() => void onSave(fields)}>
-          Save playbook
-        </Button>
+    <div className="space-y-5">
+      <div>
+        <div className="mb-2 text-[12px] font-medium text-t2">What kind of business is this?</div>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {UseCaseSchema.options.map((uc) => {
+            const p = USE_CASES[uc];
+            const active = fields.useCase === uc;
+            return (
+              <button
+                key={uc}
+                type="button"
+                onClick={() => set("useCase", uc)}
+                className={cn(
+                  "rounded-[14px] border p-3 text-left transition-colors",
+                  active ? "border-cyan/40 bg-cyan/[0.07]" : "border-hairline bg-white/[0.03] hover:bg-white/[0.06]",
+                )}
+              >
+                <div className="text-[12.5px] font-medium text-t1">{p.label}</div>
+                <div className="mt-0.5 text-[10.5px] leading-snug text-t3">{p.blurb}</div>
+              </button>
+            );
+          })}
+        </div>
+        <motion.div
+          key={fields.useCase}
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-3 rounded-[14px] border border-violet/20 bg-violet/[0.06] p-3.5 text-[12px] leading-relaxed text-t2"
+        >
+          <span className="font-medium text-t1">Swara will build:</span> {profile.agents.join(" · ")}.{" "}
+          <span className="text-t3">{profile.hint}</span>
+        </motion.div>
+      </div>
+
+      <div className="grid gap-3.5 md:grid-cols-2">
+        <Field label="What do you do?" hint="One line the agent can say if asked who you are">
+          <TextInput value={fields.businessType} onChange={(v) => set("businessType", v)} placeholder="D2C grocery, metro helpline, clinic…" />
+        </Field>
+        <Field label="Working hours">
+          <TextInput value={fields.hours} onChange={(v) => set("hours", v)} placeholder="10:00-19:00 IST, closed Sundays" />
+        </Field>
+        <div className="space-y-3 rounded-[14px] border border-hairline p-3.5">
+          <Toggle checked={fields.humanEscalation} onChange={(v) => set("humanEscalation", v)} label="Calls can be transferred to a human" />
+          <p className="text-[11px] leading-relaxed text-t3">
+            {fields.humanEscalation
+              ? "Agents may offer the desks listed under Transfers. With no desk configured they take a callback."
+              : "Agents never offer a transfer. Stuck or angry callers get a callback promise and a logged action instead."}
+          </p>
+        </div>
+        <div className="space-y-3 rounded-[14px] border border-hairline p-3.5">
+          <Toggle checked={fields.hasSales} onChange={(v) => set("hasSales", v)} label="We also want outbound sales / follow-up" />
+          <p className="text-[11px] leading-relaxed text-t3">
+            Adds inbound sales enquiry and outbound lead follow-up agents to Swara&apos;s plan. Outbound needs a 140-series
+            number and DND scrubbing (Campaigns).
+          </p>
+        </div>
+        <Field label="When should the agent transfer?" hint="Without this, and without transfer desks, the agent will not offer a human">
+          <textarea
+            value={fields.transferPolicy}
+            onChange={(e) => set("transferPolicy", e.target.value)}
+            rows={4}
+            className="glass w-full resize-y rounded-[14px] p-3.5 text-[13px] text-t1 outline-none focus:border-cyan/45"
+            placeholder="Transfer on the second stuck turn, or immediately for safety."
+          />
+        </Field>
+        <Field label="Booking rules">
+          <textarea
+            value={fields.bookingPolicy}
+            onChange={(e) => set("bookingPolicy", e.target.value)}
+            rows={4}
+            className="glass w-full resize-y rounded-[14px] p-3.5 text-[13px] text-t1 outline-none focus:border-cyan/45"
+            placeholder="Only offer slots from the appointment types list. Confirm by SMS."
+          />
+        </Field>
+        <Field label="Complaint SLA (hours)">
+          <TextInput type="text" value={String(fields.complaintSlaHours)} onChange={(v) => set("complaintSlaHours", Number(v) || 24)} />
+        </Field>
+        <div className="flex items-end">
+          <Button variant="primary" disabled={busy} onClick={() => void onSave(fields)}>
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            Save playbook
+          </Button>
+        </div>
       </div>
     </div>
   );

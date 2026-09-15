@@ -46,18 +46,28 @@ export function upsertPlaybook(
     transferPolicy?: string;
     bookingPolicy?: string;
     complaintSlaHours?: number;
+    /** Use-case profile and switches live in extra_json — they shape which
+     *  setup cards matter and what the planner builds, not the prompt. */
+    useCase?: string;
+    hasSales?: boolean;
+    humanEscalation?: boolean;
   },
 ) {
   const current = playbook(orgId);
+  const extra = { ...current.extra };
+  if (fields.useCase !== undefined) extra.useCase = fields.useCase;
+  if (fields.hasSales !== undefined) extra.hasSales = fields.hasSales;
+  if (fields.humanEscalation !== undefined) extra.humanEscalation = fields.humanEscalation;
   db().prepare(
     `INSERT INTO workspace_playbook (org_id, business_type, hours, transfer_policy, booking_policy, complaint_sla_hours, extra_json)
-     VALUES (?, ?, ?, ?, ?, ?, '{}')
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(org_id) DO UPDATE SET
        business_type=excluded.business_type,
        hours=excluded.hours,
        transfer_policy=excluded.transfer_policy,
        booking_policy=excluded.booking_policy,
-       complaint_sla_hours=excluded.complaint_sla_hours`,
+       complaint_sla_hours=excluded.complaint_sla_hours,
+       extra_json=excluded.extra_json`,
   ).run(
     orgId,
     fields.businessType ?? current.businessType,
@@ -65,8 +75,25 @@ export function upsertPlaybook(
     fields.transferPolicy ?? current.transferPolicy,
     fields.bookingPolicy ?? current.bookingPolicy,
     fields.complaintSlaHours ?? current.complaintSlaHours,
+    JSON.stringify(extra),
   );
   return playbook(orgId);
+}
+
+/** The playbook as the client sees it — extra_json flattened. */
+export function publicPlaybook(orgId: string) {
+  const p = playbook(orgId);
+  return {
+    orgId: p.orgId,
+    businessType: p.businessType,
+    hours: p.hours,
+    transferPolicy: p.transferPolicy,
+    bookingPolicy: p.bookingPolicy,
+    complaintSlaHours: p.complaintSlaHours,
+    useCase: typeof p.extra.useCase === "string" ? p.extra.useCase : "other",
+    hasSales: p.extra.hasSales === true,
+    humanEscalation: p.extra.humanEscalation !== false,
+  };
 }
 
 export function voices(orgId: string) {
@@ -413,6 +440,7 @@ export function setupStatus(orgId: string) {
     knowledge: count("SELECT COUNT(*) n FROM knowledge_docs WHERE org_id=?"),
     connectors: count("SELECT COUNT(*) n FROM connectors WHERE org_id=?"),
     voices: count("SELECT COUNT(*) n FROM voices WHERE org_id=?"),
+    agents: count("SELECT COUNT(*) n FROM agents WHERE org_id=?"),
     playbook: playbook(orgId),
   };
 }

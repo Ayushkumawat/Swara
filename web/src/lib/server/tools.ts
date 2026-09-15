@@ -1,8 +1,18 @@
 import "server-only";
 import { getDb } from "./db";
-import { classifyDepartment, searchKnowledge } from "./ai";
+import { classifyDepartment, ingestKnowledgeDoc, searchKnowledge } from "./ai";
 import { createBooking, createComplaint } from "./repo";
-import { appointmentTypes, logToolInvocation, transferTargets } from "./workspace";
+import {
+  appointmentTypes,
+  logToolInvocation,
+  setupStatus,
+  transferTargets,
+  upsertAppointmentType,
+  upsertDepartment,
+  upsertPlaybook,
+  upsertTransfer,
+} from "./workspace";
+import { planAgents } from "./planner";
 
 /**
  * The agent's hands.
@@ -58,9 +68,151 @@ async function runTool(
     }
     case "transfer_to_human":
       return transferHuman(orgId, args);
+    case "handoff_to_agent":
+      return handoffToAgent(orgId, callId, args);
+    case "end_call":
+      return endCall(orgId, callId, args);
+
+    // Swara's setup tools. Each writes a workspace row and returns what was
+    // saved, so she can confirm it in half a sentence.
+    case "get_setup_status": {
+      const s = setupStatus(orgId);
+      const d = getDb();
+      return {
+        business: s.playbook.businessType || "not described yet",
+        use_case: String(s.playbook.extra.useCase ?? "not set"),
+        hours: s.playbook.hours,
+        departments: (d.prepare("SELECT name FROM departments WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name),
+        transfer_desks: transferTargets(orgId).map((t) => `${t.name} (${t.role})`),
+        appointment_types: appointmentTypes(orgId).map((a) => a.name),
+        knowledge_docs: s.knowledge,
+        agents: (d.prepare("SELECT name FROM agents WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name),
+      };
+    }
+    case "save_playbook": {
+      const p = upsertPlaybook(orgId, {
+        businessType: str(args.business_type),
+        hours: str(args.hours),
+        transferPolicy: str(args.transfer_policy),
+        bookingPolicy: str(args.booking_policy),
+        complaintSlaHours: typeof args.complaint_sla_hours === "number" ? Math.round(args.complaint_sla_hours) : undefined,
+        useCase: str(args.use_case),
+        hasSales: typeof args.has_sales === "boolean" ? args.has_sales : undefined,
+        humanEscalation: typeof args.human_escalation === "boolean" ? args.human_escalation : undefined,
+      });
+      return { saved: true, business: p.businessType, use_case: p.extra.useCase ?? "other", hours: p.hours };
+    }
+    case "add_department": {
+      const name = str(args.name);
+      if (!name) return { error: "Department needs a name." };
+      const r = upsertDepartment(orgId, { name, keywords: strList(args.keywords) });
+      return { saved: true, department: name, id: r.id };
+    }
+    case "add_transfer_target": {
+      const phone = str(args.phone)?.replace(/[^\d+]/g, "") ?? "";
+      if (phone.replace(/\D/g, "").length < 10) return { error: "That number is too short. Ask for the full 10-digit mobile and read it back." };
+      const deptName = str(args.department)?.toLowerCase();
+      const dept = deptName
+        ? (getDb().prepare("SELECT id FROM departments WHERE org_id=? AND lower(name)=?").get(orgId, deptName) as { id: string } | undefined)
+        : undefined;
+      const r = upsertTransfer(orgId, {
+        name: str(args.name) ?? "On-call",
+        role: str(args.role) ?? "Escalation",
+        phone: phone.startsWith("+") ? phone : phone.length === 10 ? `+91${phone}` : `+${phone}`,
+        hours: str(args.hours),
+        whenToUse: str(args.when_to_use) ?? "Caller asked for a person, or the agent is stuck",
+        departmentId: dept?.id ?? null,
+      });
+      return { saved: true, desk: args.name, id: r.id, note: "Agents may now transfer to this person." };
+    }
+    case "add_appointment_type": {
+      const name = str(args.name);
+      if (!name) return { error: "Appointment type needs a name." };
+      const r = upsertAppointmentType(orgId, {
+        name,
+        durationMin: typeof args.duration_min === "number" ? Math.round(args.duration_min) : 30,
+        hours: str(args.hours),
+        location: str(args.location),
+        notes: str(args.notes),
+      });
+      return { saved: true, appointment_type: name, id: r.id };
+    }
+    case "add_knowledge": {
+      const name = str(args.name);
+      const text = str(args.text);
+      if (!name || !text || text.length < 20) return { error: "Need a name and at least a full sentence of text." };
+      const doc = await ingestKnowledgeDoc(orgId, name, "text", text);
+      return { saved: true, document: name, chunks: doc.chunks, note: "Agents will search this before answering policy questions." };
+    }
+    case "propose_agents": {
+      const brief = str(args.brief) ?? "";
+      const proposed = Array.isArray(args.agents) ? (args.agents as Record<string, unknown>[]) : [];
+      const plan = await planAgents(orgId, {
+        brief: [
+          brief,
+          proposed.length
+            ? `Swara proposes: ${proposed.map((a) => `${a.name} (${a.direction}, ${a.intent}): ${a.job}`).join(" | ")}`
+            : "",
+        ].filter(Boolean).join("\n"),
+      });
+      // The plan is handed to the console through the tool result. The
+      // browser session surfaces it in the Build-with-Swara panel for
+      // approval; nothing is created until the owner says so.
+      return {
+        proposed: true,
+        agents: plan.agents.map((a) => `${a.name} — ${a.direction}`),
+        gaps: plan.gaps,
+        note: "The console is showing this plan for approval. Describe it in three sentences and ask if anything should change.",
+        __plan: plan,
+      };
+    }
     default:
       return { error: `Unknown tool ${name}` };
   }
+}
+
+const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+const strList = (v: unknown) => (Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : undefined);
+
+/**
+ * Handoff to a sibling agent. The tool result carries a control record the
+ * session runtime acts on: it swaps the persona underneath the same call and
+ * feeds the summary in as a [HANDOFF: ...] marker. The model only sees a
+ * confirmation, so it says its one-line bridge and stops talking.
+ */
+function handoffToAgent(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const asked = String(args.agent_name ?? "").toLowerCase().trim();
+  const rows = getDb()
+    .prepare("SELECT id, name, intent FROM agents WHERE org_id=?")
+    .all(orgId) as { id: string; name: string; intent: string }[];
+  const target =
+    rows.find((r) => r.name.toLowerCase() === asked) ??
+    rows.find((r) => asked && (r.name.toLowerCase().includes(asked) || asked.includes(r.name.toLowerCase())));
+  if (!target) {
+    return {
+      error: `No agent called "${args.agent_name}". Only hand off to a name in your AGENT DIRECTORY. Otherwise handle it yourself or take a callback.`,
+    };
+  }
+  if (callId) {
+    getDb().prepare("UPDATE calls SET agent_id=?, agent_name=?, intent=? WHERE id=? AND org_id=?")
+      .run(target.id, target.name, target.intent, callId, orgId);
+  }
+  return {
+    handed_off: true,
+    to: target.name,
+    note: "Stop speaking now. The other agent continues the call.",
+    __control: { kind: "handoff", agentId: target.id, agentName: target.name, summary: String(args.summary ?? "") },
+  };
+}
+
+/** Mark the call outcome; the runtime hangs up once the closing audio drains. */
+function endCall(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const outcome = String(args.outcome ?? "resolved");
+  if (callId) {
+    getDb().prepare("UPDATE calls SET outcome=? WHERE id=? AND org_id=? AND outcome IS NULL")
+      .run(outcome === "escalated" ? "escalated" : outcome === "no_answer" ? "no_answer" : "resolved", callId, orgId);
+  }
+  return { ending: true, note: "Say nothing further.", __control: { kind: "end", outcome } };
 }
 
 /**
@@ -213,5 +365,8 @@ function transferHuman(orgId: string, args: Record<string, unknown>) {
     hours: target.hours,
     reason: String(args.reason ?? ""),
     note: `Tell the caller you are connecting them to ${target.name}, ${target.role}. Do not read the full number unless they ask.`,
+    // On a phone leg the bridge dials this number and drops out; in the
+    // browser test bench it is shown as a caption.
+    __control: { kind: "transfer", phone: target.phone, name: target.name },
   };
 }

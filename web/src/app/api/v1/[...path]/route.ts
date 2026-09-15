@@ -7,6 +7,8 @@ import { finishCall } from "@/lib/server/pipeline";
 import { executeTool } from "@/lib/server/tools";
 import { ingestKnowledgeDoc } from "@/lib/server/ai";
 import * as ws from "@/lib/server/workspace";
+import { applyPlan, planAgents } from "@/lib/server/planner";
+import { AgentPlanSchema, UseCaseSchema } from "@/lib/api/schemas";
 
 /**
  * The whole API surface in one router.
@@ -54,7 +56,7 @@ const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = 
       id, name, blurb, intent, direction, needs,
     })),
   "setup": (u) => ws.setupStatus(u.orgId),
-  "setup/playbook": (u) => publicPlaybook(u.orgId),
+  "setup/playbook": (u) => ws.publicPlaybook(u.orgId),
   "setup/transfers": (u) => ws.transferTargets(u.orgId),
   "setup/appointments": (u) => ws.appointmentTypes(u.orgId),
   "setup/connectors": (u) => ws.connectors(u.orgId),
@@ -70,18 +72,6 @@ const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = 
   "actions": (u) => repo.actions(u.orgId, u.departmentId),
   "auth/me": (u) => ({ user: u }),
 };
-
-function publicPlaybook(orgId: string) {
-  const p = ws.playbook(orgId);
-  return {
-    orgId: p.orgId,
-    businessType: p.businessType,
-    hours: p.hours,
-    transferPolicy: p.transferPolicy,
-    bookingPolicy: p.bookingPolicy,
-    complaintSlaHours: p.complaintSlaHours,
-  };
-}
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   const { path } = await ctx.params;
@@ -140,7 +130,15 @@ const PlaybookBody = z.object({
   transferPolicy: z.string().optional(),
   bookingPolicy: z.string().optional(),
   complaintSlaHours: z.number().int().min(1).max(168).optional(),
+  useCase: UseCaseSchema.optional(),
+  hasSales: z.boolean().optional(),
+  humanEscalation: z.boolean().optional(),
 });
+const PlanBody = z.object({
+  brief: z.string().max(4000).default(""),
+  answers: z.record(z.string(), z.string()).optional(),
+});
+const ApplyPlanBody = z.object({ plan: AgentPlanSchema.pick({ agents: true }) });
 const DepartmentBody = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
@@ -179,6 +177,11 @@ const CreateCampaignBody = z.object({
   name: z.string().min(1),
   agentId: z.string().min(1),
   series: z.enum(["140", "160"]),
+});
+const OutboundBody = z.object({
+  to: z.string().min(10),
+  agentId: z.string().min(1),
+  from: z.string().optional(),
 });
 const ContactsBody = z.object({
   contacts: z.array(
@@ -263,6 +266,30 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
 
   if (!user) return json({ error: "Not signed in" }, 401);
 
+  // "Call me now": ask the Plivo bridge to dial out with this agent. The
+  // bridge is a separate process (telephony/bridge.py); without it running
+  // this returns a clear error rather than pretending.
+  if (key === "telephony/outbound") {
+    const parsed = OutboundBody.safeParse(body);
+    if (!parsed.success) return json({ error: "to and agentId required" }, 400);
+    const bridge = process.env.TELEPHONY_BRIDGE_URL;
+    if (!bridge) return json({ error: "TELEPHONY_BRIDGE_URL is not set. Start the Plivo bridge (docs/telephony.md)." }, 503);
+    const from = parsed.data.from ?? repo.numbers(user.orgId).find((n) => n.status === "active")?.e164;
+    try {
+      const res = await fetch(`${bridge.replace(/\/$/, "")}/dial`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-swara-internal": process.env.TELEPHONY_SHARED_SECRET ?? "" },
+        body: JSON.stringify({ to: parsed.data.to, from, agentId: parsed.data.agentId, orgId: user.orgId }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) return json({ error: payload.error ?? `Bridge returned ${res.status}` }, 502);
+      return json(payload);
+    } catch (error) {
+      return json({ error: `Bridge unreachable at ${bridge}: ${error instanceof Error ? error.message : "error"}` }, 502);
+    }
+  }
+
   if (key === "agents") {
     const parsed = CreateAgentBody.safeParse(body);
     if (!parsed.success) return json({ error: "name or templateId required" }, 400);
@@ -283,7 +310,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     const parsed = PlaybookBody.safeParse(body);
     if (!parsed.success) return json({ error: "Invalid playbook" }, 400);
     ws.upsertPlaybook(user.orgId, parsed.data);
-    return json(publicPlaybook(user.orgId));
+    return json(ws.publicPlaybook(user.orgId));
+  }
+
+  // Swara's planner: brief in, reviewable plan out; nothing is written until
+  // the owner applies it.
+  if (key === "agents/plan") {
+    const parsed = PlanBody.safeParse(body);
+    if (!parsed.success) return json({ error: "Invalid brief" }, 400);
+    return json(await planAgents(user.orgId, parsed.data));
+  }
+
+  if (key === "agents/plan/apply") {
+    const parsed = ApplyPlanBody.safeParse(body);
+    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid plan" }, 400);
+    if (parsed.data.plan.agents.length === 0) return json({ error: "Plan has no agents" }, 400);
+    return json({ created: applyPlan(user.orgId, parsed.data.plan) }, 201);
   }
 
   if (key === "departments") {
@@ -394,6 +436,12 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ path: s
 
   if (path[0] === "departments" && path[1]) {
     const result = ws.deleteDepartment(user.orgId, path[1]);
+    if (result.error) return json({ error: result.error }, 400);
+    return json({ ok: true });
+  }
+
+  if (path[0] === "agents" && path[1]) {
+    const result = repo.deleteAgent(user.orgId, path[1]);
     if (result.error) return json({ error: result.error }, 400);
     return json({ ok: true });
   }

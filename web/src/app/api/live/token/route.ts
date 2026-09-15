@@ -19,6 +19,7 @@ import {
   LIVE_API_VERSION,
   LIVE_MODEL,
   LIVE_VOICES,
+  SETUP_TOOL_DECLARATIONS,
   TOKEN_SESSION_START_TTL_MS,
   TOKEN_TTL_MS,
   buildLiveConfig,
@@ -70,7 +71,10 @@ export async function POST(request: Request) {
   const user = await currentUser().catch(() => null);
   const orgId = user?.orgId ?? "org_demo";
   const prompt = composeLivePrompt(orgId, agentId, voice);
-  const voiceName = LIVE_VOICES.find((v) => v.name === voice)?.name;
+  // Swara has a fixed voice; every other agent takes what the caller picked.
+  const voiceName = prompt.setupTools
+    ? prompt.voice
+    : (LIVE_VOICES.find((v) => v.name === voice)?.name ?? prompt.voice);
   const systemInstruction = prompt.systemInstruction;
 
   try {
@@ -93,6 +97,7 @@ export async function POST(request: Request) {
             systemInstruction,
             voice: voiceName,
             resumeHandle,
+            extraTools: prompt.setupTools ? SETUP_TOOL_DECLARATIONS : [],
           }),
         },
         httpOptions: { apiVersion: LIVE_API_VERSION },
@@ -125,7 +130,7 @@ export async function POST(request: Request) {
         apiVersion: LIVE_API_VERSION,
         expiresAt: new Date(Date.now() + TOKEN_TTL_MS).toISOString(),
         callId: activeCallId,
-        agent: { id: agentId, name: prompt.name, greeting: prompt.greeting },
+        agent: { id: agentId, name: prompt.name, greeting: prompt.greeting, voice: voiceName },
       },
       // A cached credential is a shared credential.
       { headers: { "Cache-Control": "no-store" } },

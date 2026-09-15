@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -240,12 +240,10 @@ function NewCampaignModal({
 }) {
   const agents = useAgents();
   const [name, setName] = useState("");
-  const [agentId, setAgentId] = useState("");
+  const [pickedAgentId, setAgentId] = useState("");
   const [series, setSeries] = useState<"140" | "160">("160");
-
-  useEffect(() => {
-    if (!agentId && agents.data?.[0]?.id) setAgentId(agents.data[0].id);
-  }, [agentId, agents.data]);
+  // Default to the first agent until the user picks one; derived, not synced.
+  const agentId = pickedAgentId || agents.data?.[0]?.id || "";
 
   const create = async () => {
     if (!name.trim() || !agentId) {

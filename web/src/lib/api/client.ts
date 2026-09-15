@@ -2,6 +2,8 @@ import type { ZodType } from "zod";
 import * as fx from "./fixtures";
 import {
   ActionItemSchema,
+  AgentPlanSchema,
+  type AgentPlan,
   AgentSchema,
   AgentTemplateSchema,
   AgentVersionSchema,
@@ -12,6 +14,7 @@ import {
   InvoiceSchema,
   PlaybookSchema,
   SessionUserSchema,
+  SetupStatusSchema,
   TransferTargetSchema,
   AnalyticsSchema,
   ApiKeySchema,
@@ -106,7 +109,11 @@ const MOCK_ROUTES: Record<string, () => unknown> = {
     transferPolicy: "Transfer on the second stuck turn.",
     bookingPolicy: "Only offer configured slots.",
     complaintSlaHours: 24,
+    useCase: "ecommerce",
+    hasSales: false,
+    humanEscalation: true,
   }),
+  "/setup": () => ({ departments: 6, transfers: 1, appointmentTypes: 1, knowledge: 3, connectors: 1, voices: 5, agents: 6 }),
   "/setup/transfers": () => [
     { id: "xfer_demo", name: "Priya Desai", role: "Support lead", phone: "+919820011122", hours: "10:00-19:00 IST", whenToUse: "Angry caller or they asked for a supervisor", departmentId: "dept_support", department: "Customer Support", priority: 0 },
   ],
@@ -224,6 +231,7 @@ export const endpoints = {
   invoices: () => apiGet("/billing/invoices", z.array(InvoiceSchema)),
   me: () => apiGet("/auth/me", z.object({ user: SessionUserSchema })),
   playbook: () => apiGet("/setup/playbook", PlaybookSchema),
+  setupStatus: () => apiGet("/setup", SetupStatusSchema),
   transfers: () => apiGet("/setup/transfers", z.array(TransferTargetSchema)),
   appointmentTypes: () => apiGet("/setup/appointments", z.array(AppointmentTypeSchema)),
   connectors: () => apiGet("/setup/connectors", z.array(ConnectorRowSchema)),
@@ -247,6 +255,17 @@ export const mutations = {
     apiSend("POST", "/agents", body, z.object({ id: z.string() })),
   updateAgent: (id: string, body: unknown) =>
     apiSend("PATCH", `/agents/${id}`, body, z.object({ ok: z.boolean(), id: z.string() })),
+  deleteAgent: (id: string) =>
+    apiSend("DELETE", `/agents/${id}`, { ok: true }, z.object({ ok: z.boolean() })),
+  planAgents: (body: { brief: string; answers?: Record<string, string> }) =>
+    apiSend("POST", "/agents/plan", body, AgentPlanSchema),
+  applyPlan: (plan: Pick<AgentPlan, "agents">) =>
+    apiSend(
+      "POST",
+      "/agents/plan/apply",
+      { plan },
+      z.object({ created: z.array(z.object({ key: z.string(), id: z.string(), name: z.string() })) }),
+    ),
   savePlaybook: (body: unknown) =>
     apiSend("POST", "/setup/playbook", body, PlaybookSchema),
   saveDepartment: (body: unknown) =>

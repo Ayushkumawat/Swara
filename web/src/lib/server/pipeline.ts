@@ -38,9 +38,12 @@ export async function finishCall(params: {
 }) {
   const db = getDb();
   const call = db
-    .prepare("SELECT source, status FROM calls WHERE id=? AND org_id=?")
-    .get(params.callId, params.orgId) as { source: string; status: string } | undefined;
+    .prepare("SELECT source, status, outcome FROM calls WHERE id=? AND org_id=?")
+    .get(params.callId, params.orgId) as { source: string; status: string; outcome: string | null } | undefined;
   if (!call || call.status === "completed") return;
+  // An outcome the agent declared (end_call, transfer) or the carrier reported
+  // is a fact; the transcript analysis below is a guess and must not override it.
+  const declaredOutcome = call.outcome;
 
   const aiCostInr = +((params.tokens / 1000) * AI_INR_PER_1K_TOKENS).toFixed(2);
   const telephonyCostInr =
@@ -70,7 +73,7 @@ export async function finishCall(params: {
       summary: analysis.summary,
       intent: analysis.intent,
       sentiment: analysis.sentiment,
-      outcome: analysis.outcome,
+      outcome: declaredOutcome ? undefined : analysis.outcome,
       qaScore: analysis.qaScore,
     });
     if (analysis.customerName) {

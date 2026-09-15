@@ -44,6 +44,14 @@ export type LiveEvents = {
   /** Fires when the agent uses a tool mid-call, so the UI can show the work
    *  ("Looking up order…") instead of unexplained silence. */
   onTool?: (name: string) => void;
+  /** Fires with the tool's result once it lands — the setup assistant's
+   *  writes invalidate the console's caches through this, and a proposed
+   *  agent plan reaches the Build panel this way. */
+  onToolResult?: (name: string, result: Record<string, unknown>) => void;
+  /** The call moved to another agent (handoff_to_agent). */
+  onHandoff?: (agent: { id: string; name: string }, summary: string) => void;
+  /** The agent hung up (end_call) — after its closing audio finished. */
+  onEnded?: (outcome: string) => void;
   /** Mic could not be opened. The session still starts; the caller types. */
   onMicUnavailable?: (detail: string) => void;
   onError: (message: string) => void;
@@ -60,9 +68,14 @@ type TokenResponse = {
   model: string;
   apiVersion: string;
   callId: string;
-  agent: { id: string; name: string; greeting: string };
+  agent: { id: string; name: string; greeting: string; voice?: string };
   error?: string;
 };
+
+type Control =
+  | { kind: "handoff"; agentId: string; agentName: string; summary: string }
+  | { kind: "end"; outcome: string }
+  | { kind: "transfer"; phone: string; name: string };
 
 export class LiveVoiceSession {
   private session: Session | null = null;
@@ -85,6 +98,12 @@ export class LiveVoiceSession {
   private callId: string | null = null;
   private startedAtMs = 0;
   private completionSent = false;
+
+  /** Set by a handoff: the next connect opens as this agent, and greets with
+   *  the summary marker instead of [CALL_CONNECTED]. */
+  private pendingHandoff: { agentId: string; agentName: string; summary: string } | null = null;
+  /** Set by end_call: stop once the closing audio has drained. */
+  private endingOutcome: string | null = null;
 
   constructor(
     private params: LiveSessionParams,
@@ -137,7 +156,12 @@ export class LiveVoiceSession {
 
   /** Opens one socket. Called again, with a handle, on every reconnect. */
   private async connect() {
-    const resuming = this.resumeHandle !== null;
+    const handoff = this.pendingHandoff;
+    this.pendingHandoff = null;
+    // A handoff is a new persona on the same call row: no resume handle (that
+    // would restore the *old* agent's context), the summary carries the
+    // context instead.
+    const resuming = !handoff && this.resumeHandle !== null;
 
     const response = await fetch("/api/live/token", {
       method: "POST",
@@ -183,9 +207,14 @@ export class LiveVoiceSession {
       },
     });
 
-    // A resumed session must not greet again — it is mid-conversation.
+    // A resumed session must not greet again — it is mid-conversation. A
+    // handed-off session gets the previous agent's summary and continues.
     this.session.sendRealtimeInput({
-      text: resuming ? LiveVoiceSession.RECONNECTED : LiveVoiceSession.CONNECTED,
+      text: handoff
+        ? `[HANDOFF: ${handoff.summary || "caller passed from another agent; continue the conversation"}]`
+        : resuming
+          ? LiveVoiceSession.RECONNECTED
+          : LiveVoiceSession.CONNECTED,
     });
   }
 
@@ -241,7 +270,13 @@ export class LiveVoiceSession {
       }
     }
 
-    if (content.turnComplete) this.pendingRole = null;
+    if (content.turnComplete) {
+      this.pendingRole = null;
+      // end_call / handoff take effect at the end of the turn that called
+      // them, so the bridge sentence ("connecting you to...") is heard.
+      if (this.endingOutcome !== null) void this.finishAfterAudio();
+      else if (this.pendingHandoff) void this.performHandoff();
+    }
   }
 
   private async runTools(
@@ -257,11 +292,18 @@ export class LiveVoiceSession {
             body: JSON.stringify({ callId: this.callId, name: call.name, args: call.args ?? {} }),
           });
           const payload = await res.json();
-          return {
-            id: call.id,
-            name: call.name,
-            response: res.ok ? payload.result : { error: payload.error ?? "Tool failed" },
-          };
+          const result: Record<string, unknown> = res.ok
+            ? (payload.result ?? {})
+            : { error: payload.error ?? "Tool failed" };
+
+          // Control records are for this runtime, not the model. Strip them
+          // before the response goes back so the model only sees the
+          // confirmation it should speak from.
+          const { __control, ...spoken } = result;
+          if (__control) this.applyControl(__control as Control);
+          this.events.onToolResult?.(call.name ?? "tool", result);
+
+          return { id: call.id, name: call.name, response: spoken };
         } catch {
           // The model is mid-sentence waiting on this. An error payload it can
           // apologise from beats a hung turn.
@@ -273,6 +315,60 @@ export class LiveVoiceSession {
     // The session may have been swapped by a reconnect while the tool ran;
     // whatever socket is current gets the response.
     this.session?.sendToolResponse({ functionResponses: responses });
+  }
+
+  private applyControl(control: Control) {
+    if (control.kind === "handoff") {
+      this.pendingHandoff = { agentId: control.agentId, agentName: control.agentName, summary: control.summary };
+    } else if (control.kind === "end") {
+      this.endingOutcome = control.outcome;
+    }
+    // "transfer" in the browser bench is a caption only; the phone bridge
+    // dials the desk. onToolResult carries the details to the UI.
+  }
+
+  /** Wait for the closing line to finish playing, then hang up. */
+  private async finishAfterAudio() {
+    const outcome = this.endingOutcome;
+    if (outcome === null || this.stopping) return;
+    this.endingOutcome = null;
+    await this.player.drain(6000);
+    if (this.stopping) return;
+    this.events.onEnded?.(outcome);
+    await this.stop();
+  }
+
+  /**
+   * Swap the persona under the same call: close this socket, mint a token
+   * for the target agent, reconnect with the summary marker. The mic and
+   * speaker stay open, so the caller hears a beat of silence, not a drop.
+   */
+  private async performHandoff() {
+    const target = this.pendingHandoff;
+    if (!target || this.stopping) return;
+    await this.player.drain(6000);
+    if (this.stopping) return;
+
+    this.setStatus("reconnecting", `handing off to ${target.agentName}`);
+    try {
+      this.session?.close();
+    } catch {
+      // Already gone.
+    }
+    this.session = null;
+    this.resumeHandle = null;
+    this.params = { ...this.params, agentId: target.agentId };
+    this.events.onHandoff?.({ id: target.agentId, name: target.agentName }, target.summary);
+
+    try {
+      await this.connect();
+      this.setStatus("live", `now with ${target.agentName}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.onError(`Handoff failed: ${message}`);
+      this.setStatus("error", message);
+      await this.stop();
+    }
   }
 
   /**

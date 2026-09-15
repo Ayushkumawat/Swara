@@ -98,6 +98,7 @@ export const FlowNodeKindSchema = z.enum([
   "collect",
   "book",
   "escalate",
+  "handoff",
   "end",
 ]);
 export type FlowNodeKind = z.infer<typeof FlowNodeKindSchema>;
@@ -414,6 +415,18 @@ export const AppointmentTypeSchema = z.object({
 });
 export type AppointmentType = z.infer<typeof AppointmentTypeSchema>;
 
+export const UseCaseSchema = z.enum([
+  "clinic",
+  "ecommerce",
+  "customer_care",
+  "sales",
+  "civic",
+  "hospitality",
+  "education",
+  "other",
+]);
+export type UseCase = z.infer<typeof UseCaseSchema>;
+
 export const PlaybookSchema = z.object({
   orgId: z.string(),
   businessType: z.string(),
@@ -421,8 +434,51 @@ export const PlaybookSchema = z.object({
   transferPolicy: z.string(),
   bookingPolicy: z.string(),
   complaintSlaHours: z.number(),
+  useCase: UseCaseSchema.default("other"),
+  hasSales: z.boolean().default(false),
+  humanEscalation: z.boolean().default(true),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
+
+export const SetupStatusSchema = z.object({
+  departments: z.number(),
+  transfers: z.number(),
+  appointmentTypes: z.number(),
+  knowledge: z.number(),
+  connectors: z.number(),
+  voices: z.number(),
+  agents: z.number().default(0),
+});
+export type SetupStatus = z.infer<typeof SetupStatusSchema>;
+
+/* ── Swara agent planner ─────────────────────────────────────────────────── */
+
+export const PlannedAgentSchema = z.object({
+  key: z.string(),
+  name: z.string(),
+  job: z.string(),
+  intent: IntentSchema,
+  direction: z.enum(["inbound", "outbound", "both"]),
+  handsOffTo: z.array(z.string()).default([]),
+  isFrontDoor: z.boolean().default(false),
+  needs: z.array(z.string()).default([]),
+  nodes: z.array(FlowNodeSchema),
+  edges: z.array(FlowEdgeSchema),
+  prompt: z.string(),
+});
+export type PlannedAgent = z.infer<typeof PlannedAgentSchema>;
+
+export const AgentPlanSchema = z.object({
+  brief: z.string(),
+  summary: z.string(),
+  /** Things Swara still wants to know before building. Empty = ready. */
+  questions: z.array(z.string()).default([]),
+  /** Setup gaps the plan depends on (e.g. "no transfer desk"). */
+  gaps: z.array(z.string()).default([]),
+  agents: z.array(PlannedAgentSchema),
+  source: z.enum(["gemini", "heuristic"]),
+});
+export type AgentPlan = z.infer<typeof AgentPlanSchema>;
 
 export const ConnectorRowSchema = z.object({
   id: z.string(),

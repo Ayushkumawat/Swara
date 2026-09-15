@@ -276,53 +276,59 @@ class LiveSession:
 
     async def _receive(self) -> None:
         assert self._session is not None
-        async for message in self._session.receive():
-            # Latest handle wins; older ones resume to a staler point.
-            update = getattr(message, "session_resumption_update", None)
-            if update is not None and update.resumable and update.new_handle:
-                self._resume_handle = update.new_handle
+        # receive() ends at every turn_complete; re-enter it for the next turn
+        # or a single-sentence answer would look like a dropped socket.
+        while True:
+            async for message in self._session.receive():
+                await self._handle(message)
 
-            # 60 seconds of warning before the server closes the socket.
-            # Reconnecting now, while this one still works, is the difference
-            # between a seamless swap and a dropped call.
-            if getattr(message, "go_away", None) is not None:
-                left = message.go_away.time_left
-                print(f"[live] going away in {left}; reconnecting", file=sys.stderr)
-                assert self._reconnect is not None
-                self._reconnect.set()
-                return
+    async def _handle(self, message: object) -> None:
+        # Latest handle wins; older ones resume to a staler point.
+        update = getattr(message, "session_resumption_update", None)
+        if update is not None and update.resumable and update.new_handle:
+            self._resume_handle = update.new_handle
 
-            usage = getattr(message, "usage_metadata", None)
-            if usage is not None and usage.total_token_count:
-                self.total_tokens = usage.total_token_count
+        # 60 seconds of warning before the server closes the socket.
+        # Reconnecting now, while this one still works, is the difference
+        # between a seamless swap and a dropped call.
+        if getattr(message, "go_away", None) is not None:
+            left = message.go_away.time_left
+            print(f"[live] going away in {left}; reconnecting", file=sys.stderr)
+            assert self._reconnect is not None
+            self._reconnect.set()
+            return
 
-            content = getattr(message, "server_content", None)
-            if content is None:
-                continue
+        usage = getattr(message, "usage_metadata", None)
+        if usage is not None and usage.total_token_count:
+            self.total_tokens = usage.total_token_count
 
-            if content.interrupted:
-                # Caller barged in. Whoever owns the speaker has to drop the
-                # audio it already holds, or the agent talks over them.
-                self._pending_role = None
-                if self.on_interrupt:
-                    self.on_interrupt()
-                continue
+        content = getattr(message, "server_content", None)
+        if content is None:
+            return
 
-            if getattr(content, "input_transcription", None) and content.input_transcription.text:
-                self._append("caller", content.input_transcription.text)
-            if getattr(content, "output_transcription", None) and content.output_transcription.text:
-                self._append("agent", content.output_transcription.text)
+        if content.interrupted:
+            # Caller barged in. Whoever owns the speaker has to drop the
+            # audio it already holds, or the agent talks over them.
+            self._pending_role = None
+            if self.on_interrupt:
+                self.on_interrupt()
+            return
 
-            # One event can carry several parts, so read them all.
-            if content.model_turn is not None:
-                for part in content.model_turn.parts:
-                    inline = part.inline_data
-                    if inline and inline.mime_type.startswith("audio/pcm"):
-                        if self.on_audio:
-                            await self.on_audio(inline.data)
+        if getattr(content, "input_transcription", None) and content.input_transcription.text:
+            self._append("caller", content.input_transcription.text)
+        if getattr(content, "output_transcription", None) and content.output_transcription.text:
+            self._append("agent", content.output_transcription.text)
 
-            if content.turn_complete:
-                self._pending_role = None
+        # One event can carry several parts, so read them all.
+        if content.model_turn is not None:
+            for part in content.model_turn.parts:
+                inline = part.inline_data
+                if inline and inline.mime_type.startswith("audio/pcm"):
+                    if self.on_audio:
+                        await self.on_audio(inline.data)
+
+        if content.turn_complete:
+            self._pending_role = None
 
     def _append(self, role: Role, text: str) -> None:
         """Coalesce streamed fragments into whole turns."""

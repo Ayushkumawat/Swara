@@ -20,10 +20,33 @@ const TOOL_LABEL: Record<string, string> = {
   register_complaint: "Registering complaint",
   book_slot: "Booking slot",
   search_knowledge: "Searching knowledge base",
+  transfer_to_human: "Transferring to a person",
+  handoff_to_agent: "Handing off to another agent",
+  end_call: "Wrapping up",
+  get_setup_status: "Checking what's configured",
+  save_playbook: "Saving business details",
+  add_department: "Adding department",
+  add_transfer_target: "Adding transfer desk",
+  add_appointment_type: "Adding appointment type",
+  add_knowledge: "Saving knowledge",
+  propose_agents: "Drafting your agents",
 };
 
-export function useLiveSession() {
+export type ToolEvent = { id: number; name: string; label: string; result: Record<string, unknown>; at: number };
+
+export type LiveSessionHandlers = {
+  onToolResult?: (name: string, result: Record<string, unknown>) => void;
+  onHandoff?: (agent: { id: string; name: string }, summary: string) => void;
+  onEnded?: (outcome: string) => void;
+};
+
+export function useLiveSession(handlers: LiveSessionHandlers = {}) {
   const sessionRef = useRef<LiveVoiceSession | null>(null);
+  // Latest handlers without re-creating the session when a parent re-renders.
+  const handlersRef = useRef(handlers);
+  useEffect(() => {
+    handlersRef.current = handlers;
+  });
 
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [statusDetail, setStatusDetail] = useState<string | null>(null);
@@ -39,9 +62,15 @@ export function useLiveSession() {
   /** Human label for a tool the agent is using right now, e.g. "Looking up
    *  order". Cleared a few seconds after it fires. */
   const [toolActivity, setToolActivity] = useState<string | null>(null);
+  /** Every tool result this session, newest last — the setup panel renders
+   *  these as "Swara saved…" receipts. */
+  const [toolEvents, setToolEvents] = useState<ToolEvent[]>([]);
+  /** Which agent is on the line now; changes on handoff. */
+  const [activeAgent, setActiveAgent] = useState<{ id: string; name: string } | null>(null);
+  const [endedOutcome, setEndedOutcome] = useState<string | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const start = useCallback(async (params: LiveSessionParams) => {
+  const start = useCallback(async (params: LiveSessionParams & { agentName?: string }) => {
     if (sessionRef.current) await sessionRef.current.stop();
 
     setTranscript([]);
@@ -49,6 +78,9 @@ export function useLiveSession() {
     setHasMic(true);
     setTotalTokens(0);
     setMuted(false);
+    setToolEvents([]);
+    setEndedOutcome(null);
+    setActiveAgent({ id: params.agentId, name: params.agentName ?? params.agentId });
     setStartedAt(Date.now());
 
     const session = new LiveVoiceSession(params, {
@@ -65,6 +97,21 @@ export function useLiveSession() {
         setToolActivity(TOOL_LABEL[name] ?? "Checking systems");
         if (toolTimerRef.current) clearTimeout(toolTimerRef.current);
         toolTimerRef.current = setTimeout(() => setToolActivity(null), 5000);
+      },
+      onToolResult: (name, result) => {
+        setToolEvents((prev) => [
+          ...prev.slice(-30),
+          { id: Date.now() + prev.length, name, label: TOOL_LABEL[name] ?? name, result, at: Date.now() },
+        ]);
+        handlersRef.current.onToolResult?.(name, result);
+      },
+      onHandoff: (agent, summary) => {
+        setActiveAgent(agent);
+        handlersRef.current.onHandoff?.(agent, summary);
+      },
+      onEnded: (outcome) => {
+        setEndedOutcome(outcome);
+        handlersRef.current.onEnded?.(outcome);
       },
       onMicUnavailable: () => {
         setHasMic(false);
@@ -132,6 +179,9 @@ export function useLiveSession() {
     agentSpeaking,
     totalTokens,
     toolActivity,
+    toolEvents,
+    activeAgent,
+    endedOutcome,
     error,
     hasMic,
     muted,

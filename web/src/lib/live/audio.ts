@@ -264,6 +264,18 @@ export class AudioPlayer {
     return Math.max(0, this.playhead - this.context.currentTime);
   }
 
+  /** Resolves once everything scheduled has played (or after `maxMs`). Used
+   *  so end_call and handoffs land after the closing line, not over it. */
+  async drain(maxMs = 8000) {
+    const deadline = Date.now() + maxMs;
+    // Audio may still be arriving for ~300 ms after the tool result; give it
+    // a beat before deciding the queue is empty.
+    await new Promise((r) => setTimeout(r, 350));
+    while (this.context && this.pendingSeconds > 0.05 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.min(250, this.pendingSeconds * 1000)));
+    }
+  }
+
   async stop() {
     this.interrupt();
     await this.context?.close().catch(() => {});

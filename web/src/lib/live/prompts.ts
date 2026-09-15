@@ -125,6 +125,23 @@ When the caller asks for a human, is angry after two stuck turns, or you have
 been told to transfer, call transfer_to_human. Only use a desk from your
 TRANSFER TARGETS. Never invent a name or a number. If the list is empty, take a
 callback instead.
+
+When the caller's need belongs to another agent in your AGENT DIRECTORY (for
+example they called about an order but want to buy something, or they want a
+refund and a refunds agent exists), say one sentence — "main aapko hamari
+refunds team se connect karti hoon" — then call handoff_to_agent with a two-line
+summary. Do not try to do that agent's job yourself.
+
+ENDING THE CALL
+When the caller's need is met, ask once if anything else is needed. If not,
+close warmly in one sentence, then call end_call with the outcome. If the caller
+says goodbye, say goodbye back and call end_call. Never call end_call while a
+task is half done, and never hang up on an angry caller — transfer or take a
+callback instead.
+
+If you receive a marker like [HANDOFF: ...], another agent has just passed this
+caller to you mid-call. Do not greet from scratch. Say one short line that you
+have the context, then continue from the summary.
 `.trim();
 
 export type AgentPrompt = {
