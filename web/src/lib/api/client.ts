@@ -99,6 +99,7 @@ const MOCK_ROUTES: Record<string, () => unknown> = {
   "/api-keys": () => fx.apiKeys,
   "/notifications": () => fx.notifications,
   "/departments": () => fx.departments,
+  "/departments/suggestions": () => [],
   "/actions": () => fx.actionQueue,
   "/billing/invoices": () => fx.invoices,
   "/auth/me": () => ({ user: fx.me }),
@@ -227,6 +228,8 @@ export const endpoints = {
   apiKeys: () => apiGet("/api-keys", z.array(ApiKeySchema)),
   notifications: () => apiGet("/notifications", z.array(NotificationSchema)),
   departments: () => apiGet("/departments", z.array(DepartmentSchema)),
+  departmentSuggestions: () =>
+    apiGet("/departments/suggestions", z.array(z.object({ slug: z.string(), name: z.string(), keywords: z.array(z.string()) }))),
   actions: () => apiGet("/actions", z.array(ActionItemSchema)),
   invoices: () => apiGet("/billing/invoices", z.array(InvoiceSchema)),
   me: () => apiGet("/auth/me", z.object({ user: SessionUserSchema })),
@@ -270,6 +273,12 @@ export const mutations = {
     apiSend("POST", "/setup/playbook", body, PlaybookSchema),
   saveDepartment: (body: unknown) =>
     apiSend("POST", "/departments", body, z.object({ id: z.string(), slug: z.string() })),
+  addNumber: (body: { e164: string; series: "140" | "160"; provider?: string; region?: string; assignedAgentId?: string | null }) =>
+    apiSend("POST", "/numbers", body, z.object({ id: z.string() })),
+  assignNumber: (id: string, assignedAgentId: string | null) =>
+    apiSend("PATCH", `/numbers/${id}`, { assignedAgentId }, z.object({ ok: z.boolean() })),
+  deleteNumber: (id: string) =>
+    apiSend("DELETE", `/numbers/${id}`, {}, z.object({ ok: z.boolean() })),
   deleteDepartment: (id: string) =>
     apiSend("DELETE", `/departments/${id}`, {}, z.object({ ok: z.boolean() }).or(z.object({ error: z.string() }))),
   saveTransfer: (body: unknown) =>
@@ -292,4 +301,20 @@ export const mutations = {
     apiSend("POST", `/campaigns/${campaignId}/contacts`, { contacts }, z.object({ added: z.number() })),
   addKnowledge: (body: { name: string; kind?: "pdf" | "url" | "csv" | "text"; text: string }) =>
     apiSend("POST", "/agents/knowledge", body, z.object({ id: z.string(), chunks: z.number().optional() }).passthrough()),
+  updateComplaint: (id: string, stage: "new" | "in_progress" | "escalated" | "resolved") =>
+    apiSend("PATCH", `/complaints/${id}`, { stage }, z.object({ ok: z.boolean(), id: z.string(), stage: z.string() })),
+  listenCall: (id: string) =>
+    apiSend(
+      "POST",
+      `/calls/${id}/listen`,
+      {},
+      z.object({ wsUrl: z.string().optional(), token: z.string().optional(), error: z.string().optional() }).passthrough(),
+    ),
+  interveneCall: (id: string, action: "takeover" | "transfer", phone: string) =>
+    apiSend(
+      "POST",
+      `/calls/${id}/intervene`,
+      { action, phone },
+      z.object({ ok: z.boolean().optional(), error: z.string().optional() }).passthrough(),
+    ),
 } as const;

@@ -1,15 +1,7 @@
 import "server-only";
 import { getDb, nowIso, uid } from "./db";
 import { VOICE_CATALOG } from "@/lib/live/voices";
-
-const DEFAULT_DEPARTMENTS = [
-  { slug: "support", name: "Customer Support", keywords: ["refund", "return", "wrong item", "experience"] },
-  { slug: "logistics", name: "Logistics & Delivery", keywords: ["delivery", "parcel", "delay", "reschedule"] },
-  { slug: "technical", name: "Technical / Maintenance", keywords: ["fault", "broken", "not working", "escalator"] },
-  { slug: "cleaning", name: "Cleaning & Housekeeping", keywords: ["clean", "dirty", "garbage", "toilet"] },
-  { slug: "payments", name: "Payments & Billing", keywords: ["payment", "charged", "refund", "upi"] },
-  { slug: "security", name: "Security & Safety", keywords: ["theft", "unsafe", "emergency", "harassment"] },
-];
+import { GENERAL_DEPARTMENT, suggestedDepartmentsFor } from "@/lib/agents/departments";
 
 /**
  * Workspace setup: the details a feature cannot invent.
@@ -55,7 +47,15 @@ export function upsertPlaybook(
 ) {
   const current = playbook(orgId);
   const extra = { ...current.extra };
-  if (fields.useCase !== undefined) extra.useCase = fields.useCase;
+  if (fields.useCase !== undefined && fields.useCase !== extra.useCase) {
+    extra.useCase = fields.useCase;
+    // First time an owner names their business type, offer it the desks
+    // that kind of business usually has. Only while they have added none of
+    // their own — after that the list is theirs and we stop touching it.
+    if (!hasCustomDepartments(orgId)) {
+      for (const dept of suggestedDepartmentsFor(fields.useCase)) upsertDepartment(orgId, dept);
+    }
+  }
   if (fields.hasSales !== undefined) extra.hasSales = fields.hasSales;
   if (fields.humanEscalation !== undefined) extra.humanEscalation = fields.humanEscalation;
   db().prepare(
@@ -180,6 +180,8 @@ export function transferTargets(orgId: string) {
     whenToUse: r.when_to_use as string,
     departmentId: (r.department_id as string) ?? null,
     department: (r.dept_name as string) ?? null,
+    email: (r.email as string) ?? "",
+    whatsapp: (r.whatsapp as string) ?? "",
     priority: r.priority as number,
   }));
 }
@@ -195,18 +197,20 @@ export function upsertTransfer(
     whenToUse: string;
     departmentId?: string | null;
     priority?: number;
+    email?: string;
+    whatsapp?: string;
   },
 ) {
   const id = data.id ?? uid("xfer");
   db().prepare(
-    `INSERT INTO transfer_targets (id, org_id, name, role, phone, hours, when_to_use, department_id, priority)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO transfer_targets (id, org_id, name, role, phone, hours, when_to_use, department_id, priority, email, whatsapp)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET name=excluded.name, role=excluded.role, phone=excluded.phone,
        hours=excluded.hours, when_to_use=excluded.when_to_use, department_id=excluded.department_id,
-       priority=excluded.priority`,
+       priority=excluded.priority, email=excluded.email, whatsapp=excluded.whatsapp`,
   ).run(
     id, orgId, data.name, data.role, data.phone, data.hours ?? null, data.whenToUse,
-    data.departmentId ?? null, data.priority ?? 0,
+    data.departmentId ?? null, data.priority ?? 0, data.email ?? null, data.whatsapp ?? null,
   );
   return { id };
 }
@@ -263,15 +267,66 @@ export function deleteAppointmentType(orgId: string, id: string) {
 
 export function upsertDepartment(
   orgId: string,
-  data: { id?: string; name: string; slug?: string; keywords?: string[] },
+  data: {
+    id?: string;
+    name: string;
+    slug?: string;
+    keywords?: string[];
+    email?: string;
+    phone?: string;
+    whatsapp?: string;
+  },
 ) {
   const slug = (data.slug ?? data.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const id = data.id ?? `dept_${slug}`;
+  // Ids are per-row, never derived from the slug: two tenants both adding
+  // "Billing" must not fight over one primary key. The (org_id, slug) unique
+  // constraint is what makes this an upsert.
+  // Match an existing row by id, slug, or (case-insensitive) name — a desk
+  // suggested as `billing` and one typed in as "Billing & insurance" are the
+  // same desk to the owner, and must not become two queues.
+  const existing = (data.id
+    ? db().prepare("SELECT id, slug FROM departments WHERE org_id=? AND id=?").get(orgId, data.id)
+    : db()
+        .prepare("SELECT id, slug FROM departments WHERE org_id=? AND (slug=? OR lower(name)=lower(?)) ORDER BY (slug=?) DESC LIMIT 1")
+        .get(orgId, slug, data.name.trim(), slug)) as { id: string; slug: string } | undefined;
+
+  if (existing) {
+    // Fields not sent are left alone; an empty string clears one on purpose.
+    db().prepare(
+      `UPDATE departments SET name=?, keywords=COALESCE(?, keywords),
+         email=COALESCE(?, email), phone=COALESCE(?, phone), whatsapp=COALESCE(?, whatsapp)
+       WHERE id=? AND org_id=?`,
+    ).run(
+      data.name.trim(), data.keywords ? JSON.stringify(data.keywords) : null,
+      data.email ?? null, data.phone ?? null, data.whatsapp ?? null, existing.id, orgId,
+    );
+    return { id: existing.id, slug: existing.slug };
+  }
+
+  const id = uid("dept");
   db().prepare(
-    `INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(org_id, slug) DO UPDATE SET name=excluded.name, keywords=excluded.keywords`,
-  ).run(id, orgId, slug, data.name, JSON.stringify(data.keywords ?? []));
+    "INSERT INTO departments (id, org_id, slug, name, keywords, email, phone, whatsapp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    id, orgId, slug, data.name.trim(), JSON.stringify(data.keywords ?? []),
+    data.email ?? null, data.phone ?? null, data.whatsapp ?? null,
+  );
   return { id, slug };
+}
+
+/** True once the org has any department beyond the auto-created General. */
+export function hasCustomDepartments(orgId: string) {
+  return (db()
+    .prepare("SELECT COUNT(*) n FROM departments WHERE org_id=? AND slug!=?")
+    .get(orgId, GENERAL_DEPARTMENT.slug) as { n: number }).n > 0;
+}
+
+/** Suggested desks for the org's use case that it has not added yet. */
+export function departmentSuggestions(orgId: string) {
+  const useCase = playbook(orgId).extra.useCase;
+  const have = new Set(
+    (db().prepare("SELECT slug FROM departments WHERE org_id=?").all(orgId) as { slug: string }[]).map((r) => r.slug),
+  );
+  return suggestedDepartmentsFor(typeof useCase === "string" ? useCase : undefined).filter((s) => !have.has(s.slug));
 }
 
 export function deleteDepartment(orgId: string, id: string) {
@@ -279,6 +334,18 @@ export function deleteDepartment(orgId: string, id: string) {
     .prepare("SELECT COUNT(*) n FROM actions WHERE department_id=? AND status!='done'")
     .get(id) as { n: number }).n;
   if (open > 0) return { error: `${open} open actions still sit on this department` } as const;
+  const total = (db().prepare("SELECT COUNT(*) n FROM departments WHERE org_id=?").get(orgId) as { n: number }).n;
+  if (total <= 1) return { error: "Keep at least one department — unrouted complaints need somewhere to land" } as const;
+  // Complaints and tickets that pointed here fall back to whichever desk is
+  // left, rather than dangling at a department that no longer exists.
+  const fallback = db()
+    .prepare("SELECT id FROM departments WHERE org_id=? AND id!=? ORDER BY (slug=?) DESC, name LIMIT 1")
+    .get(orgId, id, GENERAL_DEPARTMENT.slug) as { id: string } | undefined;
+  if (fallback) {
+    db().prepare("UPDATE complaints SET department_id=? WHERE org_id=? AND department_id=?").run(fallback.id, orgId, id);
+    db().prepare("UPDATE actions SET department_id=? WHERE org_id=? AND department_id=?").run(fallback.id, orgId, id);
+    db().prepare("UPDATE transfer_targets SET department_id=NULL WHERE org_id=? AND department_id=?").run(orgId, id);
+  }
   db().prepare("UPDATE users SET department_id=NULL WHERE department_id=?").run(id);
   db().prepare("DELETE FROM departments WHERE id=? AND org_id=?").run(id, orgId);
   return { error: null } as const;
@@ -403,13 +470,13 @@ export function provisionWorkspace(orgId: string) {
   const now = nowIso();
   const d = db();
 
+  // One desk, "General", so a complaint always has somewhere to land. The
+  // rest come from the owner (Setup → Departments) or from the use-case
+  // suggestions applied when they pick a business type — never from here.
   if (!(d.prepare("SELECT COUNT(*) n FROM departments WHERE org_id=?").get(orgId) as { n: number }).n) {
-    const insert = d.prepare(
-      "INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, ?, ?, ?)",
+    d.prepare("INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, ?, ?, ?)").run(
+      uid("dept"), orgId, GENERAL_DEPARTMENT.slug, GENERAL_DEPARTMENT.name, JSON.stringify(GENERAL_DEPARTMENT.keywords),
     );
-    for (const dept of DEFAULT_DEPARTMENTS) {
-      insert.run(`dept_${orgId.slice(-6)}_${dept.slug}`, orgId, dept.slug, dept.name, JSON.stringify(dept.keywords));
-    }
   }
 
   if (!(d.prepare("SELECT COUNT(*) n FROM voices WHERE org_id=?").get(orgId) as { n: number }).n) {

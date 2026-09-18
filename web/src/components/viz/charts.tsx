@@ -138,8 +138,10 @@ export function TrendArea({
       ...d,
     }));
 
+    // An empty series must not emit a path without a moveto — the browser
+    // logs an attribute error for every render.
     const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
-    const area = `${line} L${W},${H} L0,${H} Z`;
+    const area = points.length ? `${line} L${W},${H} L0,${H} Z` : "";
     return { line, area, points, lo, hi };
   }, [data, yMin, yMax]);
 

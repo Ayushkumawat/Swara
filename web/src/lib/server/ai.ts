@@ -1,6 +1,6 @@
 import "server-only";
 import { GoogleGenAI, Type } from "@google/genai";
-import { getDb } from "./db";
+import { getDb, uid } from "./db";
 
 /**
  * The non-live AI: post-call analysis and knowledge embeddings.
@@ -153,7 +153,17 @@ export function classifyDepartment(
     const hits = (JSON.parse(row.keywords) as string[]).filter((k) => lower.includes(k)).length;
     if (hits > 0 && (!best || hits > best.hits)) best = { row, hits };
   }
-  const chosen = best?.row ?? rows.find((r) => r.slug === "support") ?? rows[0];
+  // No keyword hit: the org's General desk, else whatever desk exists. An org
+  // with zero departments gets General created on the spot — a complaint
+  // must never be dropped because setup is incomplete.
+  let chosen = best?.row ?? rows.find((r) => r.slug === "general") ?? rows[0];
+  if (!chosen) {
+    const id = uid("dept");
+    getDb()
+      .prepare("INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, 'general', 'General', '[]')")
+      .run(id, orgId);
+    chosen = { id, slug: "general", name: "General", keywords: "[]" };
+  }
   return { id: chosen.id, slug: chosen.slug, name: chosen.name };
 }
 

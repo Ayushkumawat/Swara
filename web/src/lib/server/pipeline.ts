@@ -2,6 +2,7 @@ import "server-only";
 import { getDb, nowIso, uid } from "./db";
 import { analyzeCall } from "./ai";
 import { completeCall, updateCallAnalysis } from "./repo";
+import { recordCallForCustomer } from "./customers";
 import { IntentSchema } from "@/lib/api/schemas";
 
 /**
@@ -38,8 +39,10 @@ export async function finishCall(params: {
 }) {
   const db = getDb();
   const call = db
-    .prepare("SELECT source, status, outcome FROM calls WHERE id=? AND org_id=?")
-    .get(params.callId, params.orgId) as { source: string; status: string; outcome: string | null } | undefined;
+    .prepare("SELECT source, status, outcome, phone, customer_name, agent_name, intent, language FROM calls WHERE id=? AND org_id=?")
+    .get(params.callId, params.orgId) as
+    | { source: string; status: string; outcome: string | null; phone: string | null; customer_name: string | null; agent_name: string; intent: string; language: string | null }
+    | undefined;
   if (!call || call.status === "completed") return;
   // An outcome the agent declared (end_call, transfer) or the carrier reported
   // is a fact; the transcript analysis below is a guess and must not override it.
@@ -59,6 +62,25 @@ export async function finishCall(params: {
     telephonyCostInr,
   });
 
+  // Customer 360: the row exists from this point even if analysis fails, so
+  // a Gemini outage costs a summary, not the customer's history. Phone calls
+  // only — a browser test has no customer.
+  const customerFor = (summary?: string | null, sentiment?: string | null, name?: string | null) =>
+    call.source === "phone"
+      ? recordCallForCustomer({
+          orgId: params.orgId,
+          callId: params.callId,
+          phone: call.phone,
+          customerName: name ?? call.customer_name,
+          agentName: call.agent_name,
+          intent: call.intent,
+          summary,
+          sentiment,
+          durationSec: params.durationSec,
+          language: call.language,
+        })
+      : null;
+
   // Analysis is best-effort from here down.
   try {
     const departments = (db
@@ -67,7 +89,11 @@ export async function finishCall(params: {
       .map((d) => ({ ...d, keywords: JSON.parse(d.keywords) as string[] }));
 
     const analysis = await analyzeCall(params.transcript, departments, [...IntentSchema.options]);
-    if (!analysis) return;
+    if (!analysis) {
+      customerFor();
+      return;
+    }
+    customerFor(analysis.summary, analysis.sentiment, analysis.customerName);
 
     updateCallAnalysis(params.callId, {
       summary: analysis.summary,
@@ -110,5 +136,10 @@ export async function finishCall(params: {
     }
   } catch (error) {
     console.error("[pipeline] post-call analysis failed:", error);
+    try {
+      customerFor();
+    } catch (inner) {
+      console.error("[pipeline] customer record failed:", inner);
+    }
   }
 }

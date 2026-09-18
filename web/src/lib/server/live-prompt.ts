@@ -2,6 +2,8 @@ import "server-only";
 import { getDb } from "./db";
 import { agentPrompt } from "@/lib/live/prompts";
 import { languageDirective } from "@/lib/live/config";
+import { recordingDirective } from "@/lib/live/recording";
+import { staffCallbackBlock } from "@/lib/server/tickets";
 import { voiceByName, voiceCraft } from "@/lib/live/voices";
 import { compileFlow } from "@/lib/agents/flow";
 import { SWARA_AGENT_ID, SWARA_GREETING, SWARA_PERSONA_NAME, SWARA_SYSTEM_PROMPT, SWARA_TOOL_RULES, SWARA_VOICE } from "@/lib/agents/swara";
@@ -26,7 +28,12 @@ export type ComposedPrompt = {
   setupTools: boolean;
 };
 
-export function composeLivePrompt(orgId: string, agentId: string, voiceName?: string): ComposedPrompt {
+export function composeLivePrompt(
+  orgId: string,
+  agentId: string,
+  voiceName?: string,
+  extras?: { fromNumber?: string; briefing?: string },
+): ComposedPrompt {
   if (agentId === SWARA_AGENT_ID) return composeSwara(orgId);
 
   const stored = getDb()
@@ -47,8 +54,8 @@ export function composeLivePrompt(orgId: string, agentId: string, voiceName?: st
   const transfers = book.extra.humanEscalation === false ? [] : transferTargets(orgId);
   const slots = appointmentTypes(orgId);
   const departments = getDb()
-    .prepare("SELECT name, keywords FROM departments WHERE org_id=?")
-    .all(orgId) as { name: string; keywords: string }[];
+    .prepare("SELECT name, keywords, email, phone, whatsapp FROM departments WHERE org_id=?")
+    .all(orgId) as { name: string; keywords: string; email: string | null; phone: string | null; whatsapp: string | null }[];
   const siblings = (getDb()
     .prepare("SELECT id, name, intent, prompt FROM agents WHERE org_id=? AND id!=?")
     .all(orgId, agentId) as { id: string; name: string; intent: string; prompt: string | null }[]);
@@ -69,14 +76,22 @@ export function composeLivePrompt(orgId: string, agentId: string, voiceName?: st
     book.transferPolicy ? `TRANSFER POLICY: ${book.transferPolicy}` : "",
     book.bookingPolicy ? `BOOKING POLICY: ${book.bookingPolicy}` : "",
     departments.length
-      ? `DEPARTMENTS that own follow-up: ${departments.map((d) => d.name).join(", ")}.`
+      ? `DEPARTMENTS that own follow-up: ${departments
+          .map((d) => {
+            const bits = [d.name];
+            if (d.email) bits.push(`email ${d.email}`);
+            if (d.phone) bits.push(`phone ${d.phone}`);
+            if (d.whatsapp) bits.push(`whatsapp ${d.whatsapp}`);
+            return bits.join(", ");
+          })
+          .join("; ")}.`
       : "",
     transfers.length
       ? [
           "TRANSFER TARGETS — these are the only humans you may offer. When transferring, call transfer_to_human with their name.",
           ...transfers.map(
             (t) =>
-              `- ${t.name} (${t.role}, ${t.phone}${t.hours ? `, ${t.hours}` : ""}): ${t.whenToUse}`,
+              `- ${t.name} (${t.role}, ${t.phone}${t.email ? `, email ${t.email}` : ""}${t.whatsapp ? `, whatsapp ${t.whatsapp}` : ""}${t.hours ? `, ${t.hours}` : ""}): ${t.whenToUse}`,
           ),
         ].join("\n")
       : "TRANSFER: no human desk is configured. Do not offer a transfer. Take a callback number and say someone will call back.",
@@ -106,11 +121,14 @@ export function composeLivePrompt(orgId: string, agentId: string, voiceName?: st
     voice: catalog.name,
     setupTools: false,
     systemInstruction: [
+      extras?.briefing ? `OUTBOUND BRIEFING (do this job, then offer to take questions):\n${extras.briefing}` : "",
+      extras?.fromNumber ? staffCallbackBlock(orgId, extras.fromNumber) : "",
       `Your name on this call is ${persona}. Introduce yourself as ${persona}.`,
       voiceBlock,
       role,
       flow,
       workspace,
+      recordingDirective(),
       languageDirective(),
     ]
       .filter(Boolean)

@@ -25,8 +25,8 @@ import { seed } from "./seed";
 const DB_DIR = process.env.SWARA_DB_DIR ?? path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "swara.db");
 
-/** Bump when SCHEMA changes. Existing files migrate via V2_TABLES, they are not wiped. */
-const SCHEMA_VERSION = 2;
+/** Bump when SCHEMA changes. Existing files migrate in place, they are not wiped. */
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = /* sql */ `
   -- Tenancy ---------------------------------------------------------------
@@ -45,6 +45,9 @@ const SCHEMA = /* sql */ `
     slug          TEXT NOT NULL,
     name          TEXT NOT NULL,
     keywords      TEXT NOT NULL DEFAULT '[]',       -- json string[]
+    email         TEXT,
+    phone         TEXT,
+    whatsapp      TEXT,
     UNIQUE (org_id, slug)
   );
 
@@ -54,7 +57,9 @@ const SCHEMA = /* sql */ `
     department_id TEXT REFERENCES departments(id),  -- null = org-wide view
     name          TEXT NOT NULL,
     email         TEXT NOT NULL UNIQUE,
-    password_hash TEXT,                             -- null until invite accepted
+    password_hash TEXT,                             -- null until invite accepted, or Google-only
+    google_sub    TEXT UNIQUE,                      -- Google account id when signed in with Google
+    avatar_url    TEXT,
     role          TEXT NOT NULL,                    -- owner|admin|supervisor|agent|analyst|billing
     status        TEXT NOT NULL DEFAULT 'active',   -- active|invited|suspended
     last_active_at TEXT,
@@ -185,7 +190,10 @@ const SCHEMA = /* sql */ `
     ai_cost_inr   REAL NOT NULL DEFAULT 0,
     telephony_cost_inr REAL NOT NULL DEFAULT 0,
     transcript    TEXT,                             -- json Turn[]
-    summary       TEXT
+    summary       TEXT,
+    plivo_uuid    TEXT,
+    campaign_id   TEXT,
+    campaign_contact_id TEXT
   );
   CREATE INDEX idx_calls_org_started ON calls(org_id, started_at);
   CREATE INDEX idx_calls_org_status ON calls(org_id, status);
@@ -207,7 +215,8 @@ const SCHEMA = /* sql */ `
     call_id       TEXT,
     department_id TEXT REFERENCES departments(id),
     has_recording INTEGER NOT NULL DEFAULT 0,
-    has_consent   INTEGER NOT NULL DEFAULT 1
+    has_consent   INTEGER NOT NULL DEFAULT 1,
+    kind          TEXT NOT NULL DEFAULT 'complaint' -- enquiry|complaint|grievance
   );
 
   -- The department work queue. A complaint says "a caller is unhappy"; an
@@ -422,6 +431,8 @@ const V2_TABLES = /* sql */ `
     hours           TEXT,
     when_to_use     TEXT NOT NULL,
     department_id   TEXT REFERENCES departments(id),
+    email           TEXT,
+    whatsapp        TEXT,
     priority        INTEGER NOT NULL DEFAULT 0
   );
 
@@ -526,6 +537,49 @@ const V2_TABLES = /* sql */ `
   );
 `;
 
+const V3_TABLES = /* sql */ `
+  CREATE TABLE IF NOT EXISTS ticket_messages (
+    id              TEXT PRIMARY KEY,
+    org_id          TEXT NOT NULL,
+    complaint_id    TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    to_address      TEXT,
+    from_address    TEXT,
+    body            TEXT NOT NULL,
+    at              TEXT NOT NULL,
+    closed_ticket   INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_ticket_messages_complaint ON ticket_messages(complaint_id, at);
+`;
+
+function hasColumn(database: Database.Database, table: string, column: string) {
+  const cols = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return cols.some((c) => c.name === column);
+}
+
+function addColumn(database: Database.Database, table: string, column: string, ddl: string) {
+  if (!hasColumn(database, table, column)) {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+function migrateColumns(database: Database.Database) {
+  addColumn(database, "departments", "email", "TEXT");
+  addColumn(database, "departments", "phone", "TEXT");
+  addColumn(database, "departments", "whatsapp", "TEXT");
+  addColumn(database, "transfer_targets", "email", "TEXT");
+  addColumn(database, "transfer_targets", "whatsapp", "TEXT");
+  addColumn(database, "complaints", "kind", "TEXT NOT NULL DEFAULT 'complaint'");
+  addColumn(database, "calls", "plivo_uuid", "TEXT");
+  addColumn(database, "calls", "campaign_id", "TEXT");
+  addColumn(database, "calls", "campaign_contact_id", "TEXT");
+  // v4: Google sign-in. SQLite cannot ADD COLUMN ... UNIQUE, so the index is separate.
+  addColumn(database, "users", "google_sub", "TEXT");
+  addColumn(database, "users", "avatar_url", "TEXT");
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub)");
+}
+
 let db: Database.Database | null = null;
 
 export function getDb(): Database.Database {
@@ -543,6 +597,8 @@ export function getDb(): Database.Database {
   if (!hasMeta) {
     db.exec(SCHEMA);
     db.exec(V2_TABLES);
+    db.exec(V3_TABLES);
+    migrateColumns(db);
     db.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(
       String(SCHEMA_VERSION),
     );
@@ -557,6 +613,8 @@ export function getDb(): Database.Database {
     const current = Number(row?.value ?? 0);
     if (current < SCHEMA_VERSION) {
       db.exec(V2_TABLES);
+      db.exec(V3_TABLES);
+      migrateColumns(db);
       db.prepare("UPDATE meta SET value=? WHERE key='schema_version'").run(String(SCHEMA_VERSION));
       db.prepare(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
@@ -565,6 +623,9 @@ export function getDb(): Database.Database {
       throw new Error(
         `Database schema is v${current}, code expects v${SCHEMA_VERSION}.`,
       );
+    } else {
+      db.exec(V3_TABLES);
+      migrateColumns(db);
     }
   }
 
@@ -591,11 +652,18 @@ export function getDb(): Database.Database {
     }
   }
 
-  // v1 workspaces that just migrated still need voices / playbook rows.
+  // Every org needs its voices / playbook rows (v1 workspaces that migrated
+  // in place have none). Only the demo org gets the demo extras — transfer
+  // desks, sample slots, trunks. Real tenants start from their own setup.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const extra = require("./seed") as typeof import("./seed");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { provisionWorkspace } = require("./workspace") as typeof import("./workspace");
   const orgIds = db.prepare("SELECT id FROM orgs").all() as { id: string }[];
-  for (const org of orgIds) extra.seedWorkspaceV2(db, org.id);
+  for (const org of orgIds) {
+    if (org.id === extra.ORG_ID) extra.seedWorkspaceV2(db, org.id);
+    else provisionWorkspace(org.id);
+  }
 
   return db;
 }

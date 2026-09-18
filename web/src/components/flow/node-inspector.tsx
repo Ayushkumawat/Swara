@@ -2,7 +2,7 @@
 
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Field, TextInput, Toggle } from "@/components/ui/controls";
+import { Field, Select, TextInput, Toggle } from "@/components/ui/controls";
 import { NODE_KIND_HELP, NODE_KIND_LABEL, TOOL_OPTIONS, nodeConfig, type NodeConfig } from "@/lib/agents/flow";
 import type { FlowEdge, FlowNode } from "@/lib/api/schemas";
 
@@ -75,69 +75,46 @@ export function NodeInspector({
 
       {node.kind === "data_pull" ? (
         <Field label="Tool">
-          <select
+          <Select
+            size="sm"
             value={cfg.tool ?? ""}
-            onChange={(e) => setCfg({ tool: e.target.value || undefined })}
-            className="glass w-full rounded-[11px] px-3 py-2 text-[12.5px] text-t1 outline-none"
-          >
-            <option value="">Let the model choose</option>
-            {TOOL_OPTIONS.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setCfg({ tool: v || undefined })}
+            options={[{ value: "", label: "Let the model choose" }, ...TOOL_OPTIONS.map((t) => ({ value: t.value as string, label: t.label }))]}
+          />
         </Field>
       ) : null}
 
       {node.kind === "book" ? (
         <Field label="Appointment type" hint={appointmentTypes.length ? undefined : "None configured — add one in Workspace setup → Appointments."}>
-          <select
+          <Select
+            size="sm"
             value={cfg.appointmentType ?? ""}
-            onChange={(e) => setCfg({ appointmentType: e.target.value || undefined })}
-            className="glass w-full rounded-[11px] px-3 py-2 text-[12.5px] text-t1 outline-none"
-          >
-            <option value="">Any configured type</option>
-            {appointmentTypes.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setCfg({ appointmentType: v || undefined })}
+            options={[{ value: "", label: "Any configured type" }, ...appointmentTypes.map((t) => ({ value: t, label: t }))]}
+          />
         </Field>
       ) : null}
 
       {node.kind === "escalate" ? (
         <Field label="Transfer desk" hint={transfers.length ? undefined : "No desk configured — add one in Workspace setup → Transfers, or the agent takes a callback."}>
-          <select
+          <Select
+            size="sm"
             value={cfg.transferTarget ?? ""}
-            onChange={(e) => setCfg({ transferTarget: e.target.value || undefined })}
-            className="glass w-full rounded-[11px] px-3 py-2 text-[12.5px] text-t1 outline-none"
-          >
-            <option value="">Best match for the reason</option>
-            {transfers.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setCfg({ transferTarget: v || undefined })}
+            options={[{ value: "", label: "Best match for the reason" }, ...transfers.map((t) => ({ value: t, label: t }))]}
+          />
         </Field>
       ) : null}
 
       {node.kind === "handoff" ? (
         <Field label="Hand off to agent" hint="The other agent continues the same call with a summary of what happened so far.">
-          <select
+          <Select
+            size="sm"
             value={cfg.agentId ?? ""}
-            onChange={(e) => setCfg({ agentId: e.target.value || undefined })}
-            className="glass w-full rounded-[11px] px-3 py-2 text-[12.5px] text-t1 outline-none"
-          >
-            <option value="">Choose an agent…</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => setCfg({ agentId: v || undefined })}
+            placeholder="Choose an agent…"
+            options={agents.map((a) => ({ value: a.id, label: a.name }))}
+          />
         </Field>
       ) : null}
 

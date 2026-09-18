@@ -1,20 +1,39 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import { motion } from "motion/react";
 import { Check } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, TextInput } from "@/components/ui/controls";
+import { GoogleButton, authErrorMessage } from "@/components/auth/google-button";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 
 export default function SignupPage() {
+  return (
+    // useSearchParams needs a Suspense boundary during prerender.
+    <Suspense>
+      <SignupForm />
+    </Suspense>
+  );
+}
+
+function SignupForm() {
   const router = useRouter();
-  const [form, setForm] = useState({ name: "", business: "", email: "", phone: "", password: "" });
+  const params = useSearchParams();
+  const [form, setForm] = useState({
+    name: "",
+    business: "",
+    // The Google callback lands here with the address it saw when there was
+    // no account for it — pre-fill so the person only adds what we lack.
+    email: params.get("email") ?? "",
+    phone: "",
+    password: "",
+  });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => authErrorMessage(params.get("error")));
 
   const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
   const valid =
@@ -112,6 +131,20 @@ export default function SignupPage() {
           >
             {busy ? "Creating workspace…" : "Create workspace"}
           </Button>
+
+          {!IS_MOCK ? (
+            <>
+              <div className="my-4 flex items-center gap-3">
+                <span className="h-px flex-1 bg-hairline" />
+                <span className="text-[11px] text-t3">or</span>
+                <span className="h-px flex-1 bg-hairline" />
+              </div>
+              <GoogleButton mode="signup" label="Sign up with Google" />
+              <p className="mt-2 text-center text-[10.5px] text-t3">
+                We name the workspace after your Google Workspace domain; you can rename it in Settings.
+              </p>
+            </>
+          ) : null}
 
           <p className="mt-4 text-center text-[12px] text-t3">
             Already have one?{" "}

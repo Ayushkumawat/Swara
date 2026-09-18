@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { Download, FileAudio, FileCheck2, PhoneCall, X } from "lucide-react";
@@ -12,7 +12,9 @@ import { CardSkeleton, QueryBoundary } from "@/components/ui/feedback";
 import { SlaCountdown, useLiveClock } from "@/components/ui/live";
 import { Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
-import { useComplaints } from "@/lib/api/hooks";
+import { qk, useComplaints } from "@/lib/api/hooks";
+import { IS_MOCK, mutations } from "@/lib/api/client";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Complaint, ComplaintStage } from "@/lib/api/schemas";
 import { cn, maskPhone, relativeTime } from "@/lib/utils";
 
@@ -25,32 +27,40 @@ const COLUMNS: { stage: ComplaintStage; label: string; accent: string }[] = [
 
 export default function ComplaintsPage() {
   const query = useComplaints();
-  const [stages, setStages] = useState<Record<string, ComplaintStage>>({});
+  const qc = useQueryClient();
   const [open, setOpen] = useState<Complaint | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [hoverCol, setHoverCol] = useState<ComplaintStage | null>(null);
   const now = useLiveClock(30_000);
 
   const complaints = useMemo(
-    () => (query.data ?? []).map((c) => ({ ...c, stage: stages[c.id] ?? c.stage })),
-    [query.data, stages],
+    () => query.data ?? [],
+    [query.data],
   );
 
   const breached = complaints.filter(
     (c) => c.stage !== "resolved" && now !== null && new Date(c.slaDueAt).getTime() < now,
   );
 
-  const move = (id: string, stage: ComplaintStage) => {
-    setStages((s) => ({ ...s, [id]: stage }));
+  const move = async (id: string, stage: ComplaintStage) => {
     const label = COLUMNS.find((c) => c.stage === stage)?.label;
+    if (!IS_MOCK) {
+      try {
+        await mutations.updateComplaint(id, stage);
+        await qc.invalidateQueries({ queryKey: qk.complaints });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not move ticket");
+        return;
+      }
+    }
     toast.success(`Moved to ${label}`);
   };
 
   return (
     <>
       <PageHead
-        title="Complaints & grievances"
-        sub="Detected in real time, tracked to SLA, exportable for audit"
+        title="Tickets"
+        sub="Enquiries, complaints and grievances — filed on the call, tracked to SLA"
         actions={
           <Button variant="ghost" onClick={() => toast.success("Preparing audit export…")}>
             <Download className="size-3.5" />
@@ -149,7 +159,14 @@ export default function ComplaintsPage() {
         </Card>
       </Reveal>
 
-      <ComplaintDrawer complaint={open} onClose={() => setOpen(null)} />
+      <ComplaintDrawer
+        complaint={open}
+        onClose={() => setOpen(null)}
+        onResolve={async () => {
+          if (open) await move(open.id, "resolved");
+          setOpen(null);
+        }}
+      />
     </>
   );
 }
@@ -170,6 +187,9 @@ function ComplaintCard({
     complaint.stage !== "resolved" &&
     now !== null &&
     new Date(complaint.slaDueAt).getTime() < now;
+  // A drag ends with a click event on the same element. Without this every
+  // drop also opened the drawer.
+  const dragged = useRef(false);
 
   return (
     <motion.div
@@ -177,9 +197,18 @@ function ComplaintCard({
       drag
       dragSnapToOrigin
       dragElastic={0.12}
-      onDragStart={onDragStart}
+      onDragStart={() => {
+        dragged.current = true;
+        onDragStart();
+      }}
       onDragEnd={onDragEnd}
-      onClick={onOpen}
+      onClick={() => {
+        if (dragged.current) {
+          dragged.current = false;
+          return;
+        }
+        onOpen();
+      }}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
@@ -193,7 +222,7 @@ function ComplaintCard({
     >
       <div className="mb-2 text-[12.5px] font-medium leading-snug text-t1">{complaint.title}</div>
       <div className="mb-2 text-[11px] text-t3">
-        {complaint.customerName} · {complaint.category}
+        {complaint.customerName} · {complaint.kind ?? "complaint"} · {complaint.category}
       </div>
       <div className="flex items-center justify-between gap-2">
         <Mono className="text-[10.5px]">{complaint.ref}</Mono>
@@ -209,9 +238,11 @@ function ComplaintCard({
 function ComplaintDrawer({
   complaint,
   onClose,
+  onResolve,
 }: {
   complaint: Complaint | null;
   onClose: () => void;
+  onResolve: () => void;
 }) {
   return (
     <AnimatePresence>
@@ -251,6 +282,7 @@ function ComplaintDrawer({
                 <Detail label="Customer" value={complaint.customerName} />
                 <Detail label="Phone" value={maskPhone(complaint.phone)} mono />
                 <Detail label="Category" value={complaint.category} />
+                <Detail label="Type" value={complaint.kind ?? "complaint"} />
                 <Detail label="Assignee" value={complaint.assignee ?? "Unassigned"} />
                 <Detail label="Opened" value={relativeTime(complaint.openedAt)} />
                 <Detail
@@ -294,10 +326,7 @@ function ComplaintDrawer({
               <Button
                 variant="primary"
                 className="flex-1"
-                onClick={() => {
-                  toast.success("Marked resolved");
-                  onClose();
-                }}
+                onClick={onResolve}
               >
                 Mark resolved
               </Button>

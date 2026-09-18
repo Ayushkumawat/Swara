@@ -180,6 +180,7 @@ export const LiveCallSchema = z.object({
   /** 0–1, scored per-utterance during the call, not post-call (§4.4). */
   sentimentScore: z.number(),
   transcriptPreview: z.string().optional(),
+  source: z.enum(["phone", "browser"]).optional(),
 });
 export type LiveCall = z.infer<typeof LiveCallSchema>;
 
@@ -277,6 +278,7 @@ export const ComplaintSchema = z.object({
   department: z.string().nullable().optional(),
   hasRecording: z.boolean(),
   hasConsent: z.boolean(),
+  kind: z.enum(["enquiry", "complaint", "grievance"]).optional(),
 });
 export type Complaint = z.infer<typeof ComplaintSchema>;
 
@@ -288,6 +290,9 @@ export const DepartmentSchema = z.object({
   name: z.string(),
   openActions: z.number(),
   keywords: z.array(z.string()).optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  whatsapp: z.string().optional(),
 });
 export type Department = z.infer<typeof DepartmentSchema>;
 
@@ -399,6 +404,8 @@ export const TransferTargetSchema = z.object({
   whenToUse: z.string(),
   departmentId: z.string().nullable(),
   department: z.string().nullable(),
+  email: z.string().optional(),
+  whatsapp: z.string().optional(),
   priority: z.number(),
 });
 export type TransferTarget = z.infer<typeof TransferTargetSchema>;

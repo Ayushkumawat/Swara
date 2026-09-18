@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { toast } from "sonner";
 import { Headphones, PhoneForwarded, Radio, UserRoundPlus } from "lucide-react";
@@ -8,19 +8,24 @@ import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { LiveDot, Pill } from "@/components/ui/pill";
-import { Tabs } from "@/components/ui/controls";
+import { Field, Select, Tabs, TextInput } from "@/components/ui/controls";
 import { CardSkeleton, EmptyState, QueryBoundary } from "@/components/ui/feedback";
+import { Modal } from "@/components/ui/modal";
 import { CallDuration, SentimentMeter, Waveform } from "@/components/ui/live";
-import { useLiveCalls } from "@/lib/api/hooks";
+import { Reveal } from "@/components/motion/primitives";
+import { IS_MOCK, mutations } from "@/lib/api/client";
+import { useLiveCalls, useTransfers } from "@/lib/api/hooks";
 import { INTENT_LABEL, LANGUAGE_LABEL, type LiveCall } from "@/lib/api/schemas";
 import { maskPhone } from "@/lib/utils";
 
 type Filter = "all" | "frustrated" | "sales" | "support";
+type Intervention = { call: LiveCall; action: "takeover" | "transfer" };
 
 export default function LiveCallsPage() {
   const query = useLiveCalls();
   const [filter, setFilter] = useState<Filter>("all");
   const [listening, setListening] = useState<string | null>(null);
+  const [intervention, setIntervention] = useState<Intervention | null>(null);
 
   const calls = useMemo(() => query.data ?? [], [query.data]);
 
@@ -48,6 +53,65 @@ export default function LiveCallsPage() {
   }, [calls, filter]);
 
   const needsAttention = calls.filter((c) => c.sentiment === "frustrated");
+  const listenWs = useRef<WebSocket | null>(null);
+
+  const stopListen = () => {
+    listenWs.current?.close();
+    listenWs.current = null;
+    setListening(null);
+  };
+
+  const toggleListen = async (call: LiveCall) => {
+    if (listening === call.id) {
+      stopListen();
+      return;
+    }
+    stopListen();
+    if (IS_MOCK || call.source === "browser") {
+      setListening(call.id);
+      toast("Listening in", { description: call.source === "browser" ? "Browser test — transcript only." : "Demo mode." });
+      return;
+    }
+    try {
+      const grant = await mutations.listenCall(call.id);
+      if (grant.error || !grant.wsUrl) {
+        toast.error(grant.error ?? "Could not open a listen stream");
+        return;
+      }
+      const ws = new WebSocket(grant.wsUrl);
+      listenWs.current = ws;
+      const player = makePcmPlayer();
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(String(ev.data)) as { event?: string; sampleRate?: number; payload?: string };
+          if (msg.event === "media" && msg.payload) player.push(msg.payload, msg.sampleRate ?? 16000);
+        } catch { /* ignore */ }
+      };
+      ws.onopen = () => {
+        setListening(call.id);
+        toast("Listening in", { description: "Silent monitor — neither party hears you." });
+      };
+      ws.onerror = () => toast.error("Listen stream dropped");
+      ws.onclose = () => {
+        if (listenWs.current === ws) setListening(null);
+        player.close();
+      };
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Listen failed");
+    }
+  };
+
+  const intervene = async ({ call, action }: Intervention, phone: string) => {
+    if (IS_MOCK) {
+      toast.success(action === "takeover" ? "Bridging you onto the call…" : "Warm transfer started");
+      return;
+    }
+    const res = await mutations.interveneCall(call.id, action, phone);
+    if (res.error) toast.error(res.error);
+    else toast.success(action === "takeover" ? "You are being bridged onto the call" : "Transfer started");
+  };
+
+  useEffect(() => () => stopListen(), []);
 
   return (
     <>
@@ -126,14 +190,9 @@ export default function LiveCallsPage() {
                     key={c.id}
                     call={c}
                     listening={listening === c.id}
-                    onListen={() => {
-                      const next = listening === c.id ? null : c.id;
-                      setListening(next);
-                      if (next)
-                        toast("Listening in", {
-                          description: "The caller and agent cannot hear you.",
-                        });
-                    }}
+                    onListen={() => void toggleListen(c)}
+                    onTakeover={() => setIntervention({ call: c, action: "takeover" })}
+                    onTransfer={() => setIntervention({ call: c, action: "transfer" })}
                   />
                 ))}
               </AnimatePresence>
@@ -142,6 +201,16 @@ export default function LiveCallsPage() {
         }
       </QueryBoundary>
 
+      <InterveneModal
+        intervention={intervention}
+        onClose={() => setIntervention(null)}
+        onConfirm={async (phone) => {
+          if (intervention) await intervene(intervention, phone);
+          setIntervention(null);
+        }}
+      />
+
+      <Reveal>
       <Card interactive={false} className="mt-3.5">
         <CardHead
           title="What supervisors can do mid-call"
@@ -173,7 +242,90 @@ export default function LiveCallsPage() {
           ))}
         </div>
       </Card>
+      </Reveal>
     </>
+  );
+}
+
+/**
+ * Who takes the call. Configured transfer desks come first because they are
+ * the numbers the agent itself is allowed to hand to; a free-typed number
+ * covers the supervisor's own mobile.
+ */
+function InterveneModal({
+  intervention,
+  onClose,
+  onConfirm,
+}: {
+  intervention: Intervention | null;
+  onClose: () => void;
+  onConfirm: (phone: string) => Promise<void>;
+}) {
+  const transfers = useTransfers();
+  const [deskId, setDeskId] = useState("");
+  const [custom, setCustom] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const desks = transfers.data ?? [];
+  const desk = desks.find((d) => d.id === deskId);
+  const phone = deskId === "custom" || !deskId ? custom : desk?.phone ?? "";
+  const valid = phone.replace(/[^\d]/g, "").length >= 10;
+  const takeover = intervention?.action === "takeover";
+
+  const confirm = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try {
+      await onConfirm(phone);
+      setDeskId("");
+      setCustom("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={Boolean(intervention)}
+      onClose={onClose}
+      title={takeover ? "Take over this call" : "Transfer this call"}
+      sub={
+        intervention
+          ? `${intervention.call.customerName ?? maskPhone(intervention.call.phone)} · ${intervention.call.agentName}. ${
+              takeover
+                ? "The agent leaves; the number you pick is bridged in with the transcript so far."
+                : "Warm transfer — the agent introduces the caller, then drops off."
+            }`
+          : undefined
+      }
+      footer={
+        <>
+          <Button variant="subtle" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!valid || busy} onClick={() => void confirm()}>
+            {busy ? "Connecting…" : takeover ? "Bridge me in" : "Transfer"}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <Field label={takeover ? "Who takes over" : "Transfer to"}>
+          <Select
+            value={deskId}
+            onChange={setDeskId}
+            placeholder="Pick a desk or type a number"
+            options={[
+              ...desks.map((d) => ({ value: d.id, label: `${d.name} · ${d.role}`, hint: `${d.phone}${d.hours ? ` · ${d.hours}` : ""}` })),
+              { value: "custom", label: "Another number…", hint: "E.164 or 10-digit Indian mobile" },
+            ]}
+          />
+        </Field>
+        {deskId === "custom" || (!deskId && desks.length === 0) ? (
+          <Field label="Number">
+            <TextInput value={custom} onChange={setCustom} placeholder="+91 98765 43210" autoFocus onSubmit={() => void confirm()} />
+          </Field>
+        ) : null}
+      </div>
+    </Modal>
   );
 }
 
@@ -181,10 +333,14 @@ function CallCard({
   call,
   listening,
   onListen,
+  onTakeover,
+  onTransfer,
 }: {
   call: LiveCall;
   listening: boolean;
   onListen: () => void;
+  onTakeover: () => void;
+  onTransfer: () => void;
 }) {
   const hot = call.sentiment === "frustrated";
   const warm = call.sentiment === "declining";
@@ -241,21 +397,11 @@ function CallCard({
             {listening ? "Listening" : "Listen"}
           </Button>
           {hot ? (
-            <Button
-              size="sm"
-              variant="danger"
-              className="flex-1"
-              onClick={() => toast.success("Bridging you onto the call…")}
-            >
+            <Button size="sm" variant="danger" className="flex-1" onClick={onTakeover}>
               Take over
             </Button>
           ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="flex-1"
-              onClick={() => toast.success("Warm transfer started")}
-            >
+            <Button size="sm" variant="ghost" className="flex-1" onClick={onTransfer}>
               Transfer
             </Button>
           )}
@@ -263,4 +409,31 @@ function CallCard({
       </Card>
     </motion.div>
   );
+}
+
+function makePcmPlayer() {
+  let ctx: AudioContext | null = null;
+  let next = 0;
+  return {
+    push(b64: string, sampleRate: number) {
+      const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      if (raw.byteLength < 2) return;
+      const pcm = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2));
+      ctx ??= new AudioContext({ sampleRate });
+      const f32 = new Float32Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 32768;
+      const buf = ctx.createBuffer(1, f32.length, sampleRate);
+      buf.copyToChannel(f32, 0);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      const t = Math.max(ctx.currentTime, next);
+      src.start(t);
+      next = t + buf.duration;
+    },
+    close() {
+      void ctx?.close();
+      ctx = null;
+    },
+  };
 }

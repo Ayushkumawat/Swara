@@ -213,8 +213,9 @@ What exists in this repo, mapped to the spec above. Details in `docs/`.
 | Agents & Flows | Node-graph is the data model; flows compile into the prompt. Drag, connect, delete, inspector, undo, autosave. `handoff_to_agent` and `end_call` make flows act. | `web/src/lib/agents/flow.ts`, `web/src/components/flow/` |
 | Swara (setup agent) | Female-voiced consultant that interviews the owner, writes the workspace (playbook, departments, transfers, appointments, knowledge) through tools, and proposes agents. "Build with Swara" turns the plan into agents. | `web/src/lib/agents/swara.ts`, `web/src/lib/server/planner.ts`, `web/src/components/agents/build-with-swara.tsx` |
 | Workspace setup | Use-case profile (clinic, e-commerce, customer care, sales, civic, hospitality, education) reorders and marks what each business needs; Swara panel fills it live. | `web/src/app/(console)/setup/page.tsx`, `web/src/lib/agents/use-cases.ts` |
-| Telephony | Plivo audio-streaming bridge: inbound by number assignment, outbound "Call me now" and campaigns, tools on the phone, end/handoff/transfer, per-call metering. | `telephony/bridge.py`, `docs/telephony.md` |
-| Not yet | Call recording + consent artefacts on the phone leg, live-listen/takeover audio, DLT status API, voice biometrics | — |
+| Telephony | Plivo audio-streaming bridge: inbound by number assignment, outbound "Call me now" and campaigns (AMD), tools on the phone, end/handoff/transfer, live-listen/takeover, recording + spoken consent, per-call metering. | `telephony/bridge.py`, `docs/telephony.md` |
+| Tickets | Enquiries/complaints/grievances with a spoken reference; lookup by number+name; notify a desk by email/WhatsApp/call; close when that desk replies or the agent calls `resolve_ticket`. | Complaints board, `register_complaint` / `lookup_ticket` / `notify_stakeholder` / `resolve_ticket` |
+| Not yet | DLT status API, voice biometrics, self-hosted S2S swap | — |
 
 **Run**
 

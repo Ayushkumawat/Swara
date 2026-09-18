@@ -18,7 +18,7 @@ import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead, MetricCard } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { Field, ProgressBar, Slider, TextInput } from "@/components/ui/controls";
+import { Field, ProgressBar, Select, Slider, TextInput } from "@/components/ui/controls";
 import { MetricSkeleton, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono, Table, Td, Th, Tr } from "@/components/ui/table";
 import { LazyMount, NumberTicker, Reveal, Stagger, StaggerItem } from "@/components/motion/primitives";
@@ -275,27 +275,26 @@ function NewCampaignModal({
             <TextInput value={name} onChange={setName} placeholder="COD reminders — west" />
           </Field>
           <Field label="Agent">
-            <select
+            <Select
               value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
-              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-            >
-              {(agents.data ?? []).map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+              onChange={setAgentId}
+              placeholder={agents.data?.length ? "Pick an agent" : "No agents yet — create one first"}
+              options={(agents.data ?? []).map((a) => ({
+                value: a.id,
+                label: a.name,
+                hint: `${a.direction} · ${a.status}`,
+              }))}
+            />
           </Field>
           <Field label="Number series">
-            <select
+            <Select<"140" | "160">
               value={series}
-              onChange={(e) => setSeries(e.target.value as "140" | "160")}
-              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-            >
-              <option value="160">160 — service / transactional</option>
-              <option value="140">140 — promotional</option>
-            </select>
+              onChange={setSeries}
+              options={[
+                { value: "160", label: "160 — service / transactional", hint: "Order updates, reminders, confirmations" },
+                { value: "140", label: "140 — promotional", hint: "Offers; DND-scrubbed before dialing" },
+              ]}
+            />
           </Field>
         </div>
         <div className="mt-4 flex gap-2">

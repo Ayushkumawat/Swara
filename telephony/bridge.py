@@ -157,14 +157,22 @@ class Call:
     resume_handle: str | None = None
     handoff_marker: str | None = None
     ending: bool = False
+    bridged: bool = False  # human listen/takeover: stream may drop without ending the PSTN leg
+    briefing: str | None = None
+    campaign_id: str | None = None
+    campaign_contact_id: str | None = None
+    recording: bool = False
     # Checkpoint names we are waiting for Plivo to confirm as played.
     played: dict[str, asyncio.Event] = field(default_factory=dict)
     inbuffer: bytearray = field(default_factory=bytearray)
 
 
 CALLS: dict[str, Call] = {}
+CALLS_BY_ID: dict[str, Call] = {}
 # Outbound dials pre-register their agent here, keyed by the token in the answer URL.
 PENDING_DIALS: dict[str, dict[str, Any]] = {}
+LISTEN_TOKENS: dict[str, str] = {}  # token → call.key
+LISTENERS: dict[str, set[Any]] = {}
 
 app = Quart(__name__)
 
@@ -219,16 +227,23 @@ async def answer() -> Response:
         call.agent_id = dial.get("agentId")
         call.org_id = dial.get("orgId", "")
         call.to_number = dial.get("to", call.to_number)
+        call.briefing = dial.get("briefing")
+        call.campaign_id = dial.get("campaignId")
+        call.campaign_contact_id = dial.get("campaignContactId")
     CALLS[key] = call
     log(f"[{key}] answer {call.direction} from={call.from_number} to={call.to_number} uuid={call.plivo_uuid}")
 
     ws_url = _public_ws(f"/media-stream/{key}")
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Stream streamTimeout="86400" keepCallAlive="true" bidirectional="true"
-          contentType="audio/x-l16;rate=16000" audioTrack="inbound">{ws_url}</Stream>
-</Response>"""
-    return Response(xml, mimetype="application/xml")
+    # Single-line Stream tag: Plivo's XML parser has rejected split attribute
+    # lines as "Invalid Answer XML" (hangup 8011) in the past.
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response>"
+        '<Stream bidirectional="true" keepCallAlive="true" streamTimeout="86400" '
+        f'contentType="audio/x-l16;rate=16000" audioTrack="inbound">{ws_url}</Stream>'
+        "</Response>"
+    )
+    return Response(xml, mimetype="text/xml")
 
 
 @app.route("/plivo/hangup", methods=["GET", "POST"])
@@ -248,6 +263,13 @@ async def transfer_xml() -> Response:
     """Answer XML for a warm transfer: bridge the caller to a human desk."""
     to = request.args.get("to", "")
     caller_id = request.args.get("callerId", PLIVO_FROM_NUMBER)
+    conference = request.args.get("conference", "")
+    if conference:
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Conference startConferenceOnEnter="true" endConferenceOnExit="false">{conference}</Conference>
+</Response>"""
+        return Response(xml, mimetype="application/xml")
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial callerId="{caller_id}" timeout="30"><Number>{to}</Number></Dial>
@@ -275,12 +297,18 @@ async def dial() -> Response:
         return Response(json.dumps({"error": "PUBLIC_URL is not set on the bridge; Plivo cannot reach it"}), status=503, mimetype="application/json")
 
     token = secrets.token_urlsafe(8)
-    PENDING_DIALS[token] = {"agentId": agent_id, "orgId": org_id, "to": to}
+    PENDING_DIALS[token] = {
+        "agentId": agent_id,
+        "orgId": org_id,
+        "to": to,
+        "briefing": body.get("briefing"),
+        "campaignId": body.get("campaignId"),
+        "campaignContactId": body.get("campaignContactId"),
+    }
     answer_url = _public_http("/plivo/answer?" + urlencode({"dial": token}))
     try:
         client = _plivo()
-        made = await asyncio.to_thread(
-            client.calls.create,
+        kwargs: dict[str, Any] = dict(
             from_=from_number.replace("+", ""),
             to_=to.replace("+", ""),
             answer_url=answer_url,
@@ -288,12 +316,141 @@ async def dial() -> Response:
             hangup_url=_public_http("/plivo/hangup"),
             hangup_method="POST",
         )
+        if body.get("machineDetection"):
+            kwargs["machine_detection"] = "true"
+            kwargs["machine_detection_time"] = 5000
+            kwargs["machine_detection_url"] = _public_http("/plivo/machine")
+            kwargs["machine_detection_method"] = "POST"
+        made = await asyncio.to_thread(client.calls.create, **kwargs)
         uuid = getattr(made, "request_uuid", None) or getattr(made, "message", None)
         log(f"dial → {to} agent={agent_id} request={uuid}")
         return Response(json.dumps({"ok": True, "requestUuid": str(uuid)}), mimetype="application/json")
     except Exception as exc:  # noqa: BLE001
         PENDING_DIALS.pop(token, None)
         return Response(json.dumps({"error": f"Plivo rejected the call: {exc}"}), status=502, mimetype="application/json")
+
+
+@app.route("/plivo/machine", methods=["GET", "POST"])
+async def machine() -> Response:
+    """AMD: hang up voicemail so we do not burn minutes talking to a machine."""
+    form = await request.form
+    params = {**request.args.to_dict(), **form.to_dict()}
+    uuid = params.get("CallUUID")
+    machine_type = (params.get("Machine") or params.get("MachineType") or "").lower()
+    is_machine = machine_type in {"true", "1", "machine", "voicemail"} or params.get("Machine") == "true"
+    log(f"amd uuid={uuid} machine={params.get('Machine')} type={machine_type}")
+    if not (uuid and is_machine):
+        return Response("", status=204)
+    for call in list(CALLS.values()):
+        if call.plivo_uuid == uuid:
+            call.outcome = "voicemail"
+            call.ending = True
+            await hangup_leg(call)
+            break
+    return Response("", status=204)
+
+
+@app.route("/plivo/recording", methods=["GET", "POST"])
+async def recording_callback() -> Response:
+    form = await request.form
+    params = {**request.args.to_dict(), **form.to_dict()}
+    uuid = params.get("CallUUID")
+    url = params.get("RecordUrl") or params.get("recordingUrl") or ""
+    duration = params.get("RecordingDuration") or params.get("recordingDuration")
+    call = next((c for c in CALLS.values() if c.plivo_uuid == uuid), None)
+    org_id = (call.org_id if call else params.get("org")) or ""
+    call_id = (call.call_id if call else params.get("call")) or ""
+    if call_id and org_id and url:
+        with contextlib.suppress(Exception):
+            await console.post("recording", compact({
+                "orgId": org_id,
+                "callId": call_id,
+                "url": url,
+                "durationSec": int(float(duration)) if duration else None,
+            }))
+            log(f"recording saved call={call_id}")
+    return Response("", status=204)
+
+
+@app.route("/listen-grant", methods=["POST"])
+async def listen_grant() -> Response:
+    if not _internal_ok():
+        return Response(json.dumps({"error": "unauthorised"}), status=401, mimetype="application/json")
+    body = await request.get_json(force=True, silent=True) or {}
+    call_id = str(body.get("callId") or "")
+    call = CALLS_BY_ID.get(call_id) or next((c for c in CALLS.values() if c.call_id == call_id), None)
+    if not call:
+        return Response(json.dumps({"error": "That call is not live on this bridge"}), status=404, mimetype="application/json")
+    token = secrets.token_urlsafe(16)
+    LISTEN_TOKENS[token] = call.key
+    ws = _public_ws(f"/supervisor/{token}")
+    return Response(json.dumps({"ok": True, "wsUrl": ws, "token": token}), mimetype="application/json")
+
+
+@app.route("/intervene", methods=["POST"])
+async def intervene() -> Response:
+    if not _internal_ok():
+        return Response(json.dumps({"error": "unauthorised"}), status=401, mimetype="application/json")
+    body = await request.get_json(force=True, silent=True) or {}
+    call_id = str(body.get("callId") or "")
+    action = str(body.get("action") or "")
+    phone = str(body.get("phone") or "").replace(" ", "")
+    call = CALLS_BY_ID.get(call_id) or next((c for c in CALLS.values() if c.call_id == call_id), None)
+    if not call or not call.plivo_uuid:
+        return Response(json.dumps({"error": "Call is not on this bridge"}), status=404, mimetype="application/json")
+    if not phone:
+        return Response(json.dumps({"error": "phone required"}), status=400, mimetype="application/json")
+    try:
+        if action == "takeover":
+            await takeover_call(call, phone)
+        else:
+            await transfer_after_drain(call, None, {"phone": phone, "name": "supervisor"})
+        return Response(json.dumps({"ok": True}), mimetype="application/json")
+    except Exception as exc:  # noqa: BLE001
+        return Response(json.dumps({"error": str(exc)}), status=502, mimetype="application/json")
+
+
+@app.route("/notify", methods=["POST"])
+async def notify_route() -> Response:
+    if not _internal_ok():
+        return Response(json.dumps({"error": "unauthorised"}), status=401, mimetype="application/json")
+    body = await request.get_json(force=True, silent=True) or {}
+    channel = str(body.get("channel") or "sms")
+    to = str(body.get("to") or "").replace("+", "")
+    text = str(body.get("text") or "")
+    if not (to and text):
+        return Response(json.dumps({"error": "to and text required"}), status=400, mimetype="application/json")
+    try:
+        client = _plivo()
+        kwargs: dict[str, Any] = dict(src=PLIVO_FROM_NUMBER.replace("+", ""), dst=to, text=text)
+        if channel == "whatsapp":
+            kwargs["type"] = "whatsapp"
+        await asyncio.to_thread(client.messages.create, **kwargs)
+        return Response(json.dumps({"ok": True}), mimetype="application/json")
+    except Exception as exc:  # noqa: BLE001
+        return Response(json.dumps({"error": str(exc)}), status=502, mimetype="application/json")
+
+
+@app.websocket("/supervisor/<token>")
+async def supervisor(token: str) -> None:
+    key = LISTEN_TOKENS.get(token)
+    await websocket.accept()
+    if not key or key not in CALLS:
+        await websocket.close(1008)
+        return
+    bucket = LISTENERS.setdefault(key, set())
+    sock = websocket._get_current_object()  # noqa: SLF001
+    bucket.add(sock)
+    log(f"[{key}] supervisor joined ({len(bucket)} listening)")
+    try:
+        while True:
+            await websocket.receive()
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        bucket.discard(sock)
+        if not bucket:
+            LISTENERS.pop(key, None)
 
 
 # ── Media stream ───────────────────────────────────────────────────────────────
@@ -317,6 +474,9 @@ async def media_stream(key: str) -> None:
             "plivoCallUuid": call.plivo_uuid,
             "agentId": call.agent_id,
             "orgId": call.org_id,
+            "briefing": call.briefing,
+            "campaignId": call.campaign_id,
+            "campaignContactId": call.campaign_contact_id,
         }))
         apply_session(call, session)
     except Exception as exc:  # noqa: BLE001
@@ -333,7 +493,8 @@ async def media_stream(key: str) -> None:
         model_task.cancel()
         with contextlib.suppress(BaseException):
             await model_task
-        await finish(call)
+        if not call.bridged:
+            await finish(call)
 
 
 def compact(body: dict[str, Any]) -> dict[str, Any]:
@@ -351,6 +512,8 @@ def apply_session(call: Call, session: dict[str, Any]) -> None:
     call.system_instruction = session["systemInstruction"]
     call.voice = session.get("voice") or call.voice
     call.tools = session.get("tools", [])
+    if call.call_id:
+        CALLS_BY_ID[call.call_id] = call
 
 
 async def receive_from_plivo(call: Call, plivo_ws: Any, model_task: asyncio.Task[None]) -> None:
@@ -359,12 +522,15 @@ async def receive_from_plivo(call: Call, plivo_ws: Any, model_task: asyncio.Task
         raw = await plivo_ws.receive()
         data = json.loads(raw)
         event = data.get("event")
-        if event == "media":
-            call.inbuffer.extend(base64.b64decode(data["media"]["payload"]))
-        elif event == "start":
+        if event == "start":
             call.stream_id = data["start"].get("streamId")
             call.plivo_uuid = data["start"].get("callId", call.plivo_uuid)
             log(f"[{call.key}] stream start id={call.stream_id}")
+            asyncio.create_task(start_recording(call))
+        elif event == "media":
+            payload = data["media"]["payload"]
+            call.inbuffer.extend(base64.b64decode(payload))
+            await fanout_listen(call, payload, SEND_SAMPLE_RATE)
         elif event == "playedStream":
             ev = call.played.get(data.get("name", ""))
             if ev:
@@ -498,6 +664,7 @@ async def handle_model_message(call: Call, session: Any, plivo_ws: Any, reconnec
         for part in content.model_turn.parts:
             inline = part.inline_data
             if inline and inline.mime_type and inline.mime_type.startswith("audio/pcm") and inline.data:
+                payload = base64.b64encode(inline.data).decode()
                 await plivo_send(
                     plivo_ws,
                     {
@@ -505,10 +672,11 @@ async def handle_model_message(call: Call, session: Any, plivo_ws: Any, reconnec
                         "media": {
                             "contentType": "audio/x-l16",
                             "sampleRate": RECEIVE_SAMPLE_RATE,
-                            "payload": base64.b64encode(inline.data).decode(),
+                            "payload": payload,
                         },
                     },
                 )
+                await fanout_listen(call, payload, RECEIVE_SAMPLE_RATE)
 
     if content.turn_complete:
         call.pending_role = None
@@ -591,10 +759,13 @@ async def handoff_after_drain(call: Call, plivo_ws: Any, reconnect: asyncio.Even
 
 
 async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any]) -> None:
-    await drain(call, plivo_ws)
+    if plivo_ws is not None:
+        await drain(call, plivo_ws)
     to = str(control.get("phone", "")).replace(" ", "")
     if not (call.plivo_uuid and to):
         return
+    call.bridged = True
+    call.ending = True
     url = _public_http_abs("/plivo/transfer?" + urlencode({"to": to.replace("+", ""), "callerId": PLIVO_FROM_NUMBER.replace("+", "")}))
     try:
         client = _plivo()
@@ -602,6 +773,7 @@ async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any
         log(f"[{call.key}] transferred to {control.get('name')} {to}")
     except Exception as exc:  # noqa: BLE001
         log(f"[{call.key}] transfer failed: {exc}")
+        call.bridged = False
 
 
 def _public_http_abs(path: str) -> str:
@@ -628,6 +800,64 @@ async def say_and_hangup(call: Call, text: str) -> None:
         await asyncio.to_thread(client.calls.speak, call.plivo_uuid, text)
         await asyncio.sleep(4)
         await asyncio.to_thread(client.calls.delete, call.plivo_uuid)
+
+
+async def start_recording(call: Call) -> None:
+    if call.recording or not call.plivo_uuid:
+        return
+    call.recording = True
+    try:
+        client = _plivo()
+        await asyncio.to_thread(
+            client.calls.record,
+            call.plivo_uuid,
+            time_limit=14400,
+            file_format="mp3",
+            callback_url=_public_http_abs(
+                "/plivo/recording?" + urlencode({"call": call.call_id or "", "org": call.org_id})
+            ),
+            callback_method="POST",
+        )
+        log(f"[{call.key}] recording started")
+    except Exception as exc:  # noqa: BLE001
+        call.recording = False
+        log(f"[{call.key}] record start failed: {exc}")
+
+
+async def fanout_listen(call: Call, payload_b64: str, sample_rate: int) -> None:
+    listeners = LISTENERS.get(call.key)
+    if not listeners:
+        return
+    frame = json.dumps({"event": "media", "sampleRate": sample_rate, "payload": payload_b64})
+    dead: list[Any] = []
+    for sock in list(listeners):
+        try:
+            await sock.send(frame)
+        except Exception:  # noqa: BLE001
+            dead.append(sock)
+    for sock in dead:
+        listeners.discard(sock)
+
+
+async def takeover_call(call: Call, phone: str) -> None:
+    """Mute the model and drop the A-leg into a conference with the supervisor."""
+    if not call.plivo_uuid:
+        raise RuntimeError("no plivo uuid")
+    call.bridged = True
+    call.ending = True
+    call.outcome = "escalated"
+    conf = f"swara-{call.call_id or call.key}"
+    url = _public_http_abs("/plivo/transfer?" + urlencode({"conference": conf}))
+    client = _plivo()
+    await asyncio.to_thread(client.calls.transfer, call.plivo_uuid, legs="aleg", aleg_url=url, aleg_method="GET")
+    await asyncio.to_thread(
+        client.calls.create,
+        from_=PLIVO_FROM_NUMBER.replace("+", ""),
+        to_=phone.replace("+", ""),
+        answer_url=url,
+        answer_method="GET",
+    )
+    log(f"[{call.key}] takeover conference {conf} → {phone}")
 
 
 async def plivo_send(plivo_ws: Any, payload: dict[str, Any]) -> None:
@@ -666,6 +896,9 @@ async def finish(call: Call, hangup_cause: str | None = None) -> None:
         return
     _finished.add(call.key)
     CALLS.pop(call.key, None)
+    if call.call_id:
+        CALLS_BY_ID.pop(call.call_id, None)
+    LISTENERS.pop(call.key, None)
     call.ending = True
     if not call.call_id:
         return

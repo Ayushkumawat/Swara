@@ -146,9 +146,55 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
           description:
             "One of: cleanliness, technical fault, delay, staff behaviour, refund, safety, wrong item, other",
         },
+        kind: {
+          type: Type.STRING,
+          enum: ["enquiry", "complaint", "grievance"],
+          description: "enquiry = a question that needs a ticket; complaint = a problem; grievance = a formal/escalated complaint",
+        },
         severity: { type: Type.STRING, enum: ["low", "medium", "high", "critical"] },
       },
       required: ["customer_name", "phone", "title", "description", "category", "severity"],
+    },
+  },
+  {
+    name: "lookup_ticket",
+    description:
+      "Look up an existing ticket (enquiry, complaint or grievance) by reference number and the name it was registered under. Call this whenever a caller asks for status or quotes a number like #48213.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reference_number: { type: Type.STRING, description: "The ticket number, with or without #" },
+        customer_name: { type: Type.STRING, description: "Name the ticket was registered with" },
+        phone: { type: Type.STRING, description: "Registered mobile, if they do not have the number" },
+      },
+    },
+  },
+  {
+    name: "notify_stakeholder",
+    description:
+      "Email, WhatsApp or call the department or person who owns this ticket, with the details just collected. Use after filing when the caller needs that desk informed now.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reference_number: { type: Type.STRING },
+        channel: { type: Type.STRING, enum: ["email", "whatsapp", "sms", "call"] },
+        target_name: { type: Type.STRING, description: "Desk or department name from TRANSFER TARGETS / DEPARTMENTS" },
+        message: { type: Type.STRING, description: "Short brief to send them" },
+      },
+      required: ["reference_number", "channel"],
+    },
+  },
+  {
+    name: "resolve_ticket",
+    description:
+      "Mark a ticket done. Use when a registered department or desk calls or writes back confirming they have handled it. Never mark done just because the original caller hangs up.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reference_number: { type: Type.STRING },
+        note: { type: Type.STRING, description: "What the desk confirmed" },
+      },
+      required: ["reference_number"],
     },
   },
   {

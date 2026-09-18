@@ -28,6 +28,27 @@ export const runtime = "nodejs";
 
 const json = (data: unknown, status = 200) => NextResponse.json(data, { status });
 
+async function bridgePost(path: string, payload: unknown) {
+  const bridge = process.env.TELEPHONY_BRIDGE_URL;
+  if (!bridge) return { error: "TELEPHONY_BRIDGE_URL is not set. Start the Plivo bridge." };
+  try {
+    const res = await fetch(`${bridge.replace(/\/$/, "")}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-swara-internal": process.env.TELEPHONY_SHARED_SECRET ?? "",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { error: (data as { error?: string }).error ?? `Bridge ${res.status}` };
+    return data;
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Bridge unreachable" };
+  }
+}
+
 /* ── GET table ────────────────────────────────────────────────────────────── */
 
 const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = {
@@ -68,6 +89,7 @@ const GETS: Record<string, (user: SessionUser) => unknown | Promise<unknown>> = 
   "api-keys": (u) => repo.apiKeys(u.orgId),
   "notifications": (u) => repo.notifications(u.orgId),
   "departments": (u) => repo.departments(u.orgId),
+  "departments/suggestions": (u) => ws.departmentSuggestions(u.orgId),
   // Department users see their queue; org-wide roles see all departments.
   "actions": (u) => repo.actions(u.orgId, u.departmentId),
   "auth/me": (u) => ({ user: u }),
@@ -84,6 +106,13 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ path: stri
 
   if (path[0] === "campaigns" && path[1] && path[2] === "contacts") {
     return json(ws.campaignContacts(user.orgId, path[1]));
+  }
+
+  if (path[0] === "complaints" && path[1]) {
+    const { ticketMessages } = await import("@/lib/server/tickets");
+    const row = repo.complaints(user.orgId).find((c) => c.id === path[1]);
+    if (!row) return json({ error: "Not found" }, 404);
+    return json({ ...row, messages: ticketMessages(user.orgId, path[1]) });
   }
 
   return json({ error: `No route /${key}` }, 404);
@@ -144,6 +173,9 @@ const DepartmentBody = z.object({
   name: z.string().min(1),
   slug: z.string().optional(),
   keywords: z.array(z.string()).optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  whatsapp: z.string().optional(),
 });
 const TransferBody = z.object({
   id: z.string().optional(),
@@ -154,6 +186,8 @@ const TransferBody = z.object({
   whenToUse: z.string().min(1),
   departmentId: z.string().nullable().optional(),
   priority: z.number().int().optional(),
+  email: z.string().optional(),
+  whatsapp: z.string().optional(),
 });
 const AppointmentBody = z.object({
   id: z.string().optional(),
@@ -178,6 +212,17 @@ const CreateCampaignBody = z.object({
   agentId: z.string().min(1),
   series: z.enum(["140", "160"]),
 });
+const NumberBody = z.object({
+  e164: z
+    .string()
+    .transform((s) => s.replace(/[\s\-().]/g, ""))
+    .pipe(z.string().regex(/^\+?[1-9]\d{7,14}$/, "Enter the number in E.164 form, e.g. +91 80 4000 1234")),
+  series: z.enum(["140", "160"]),
+  provider: z.string().optional(),
+  region: z.string().optional(),
+  assignedAgentId: z.string().nullable().optional(),
+});
+const NumberPatch = z.object({ assignedAgentId: z.string().nullable() });
 const OutboundBody = z.object({
   to: z.string().min(10),
   agentId: z.string().min(1),
@@ -334,6 +379,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     return json(ws.upsertDepartment(user.orgId, parsed.data));
   }
 
+  if (key === "numbers") {
+    const parsed = NumberBody.safeParse(body);
+    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "A valid number and series are required" }, 400);
+    const result = repo.addNumber(user.orgId, parsed.data);
+    if ("error" in result) return json({ error: result.error }, 409);
+    return json(result, 201);
+  }
+
   if (key === "setup/transfers") {
     const parsed = TransferBody.safeParse(body);
     if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid transfer" }, 400);
@@ -364,6 +417,42 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     return json(ws.addCampaignContacts(user.orgId, path[1], parsed.data.contacts));
   }
 
+  if (path[0] === "calls" && path[1] && path[2] === "listen") {
+    return json(await bridgePost("/listen-grant", { callId: path[1], orgId: user.orgId }));
+  }
+
+  if (path[0] === "calls" && path[1] && path[2] === "intervene") {
+    const parsed = z
+      .object({
+        action: z.enum(["takeover", "transfer"]),
+        phone: z.string().min(8),
+      })
+      .safeParse(body);
+    if (!parsed.success) return json({ error: "action and phone required" }, 400);
+    return json(
+      await bridgePost("/intervene", {
+        callId: path[1],
+        orgId: user.orgId,
+        action: parsed.data.action,
+        phone: parsed.data.phone,
+      }),
+    );
+  }
+
+  if (key === "tickets/inbound") {
+    const parsed = z
+      .object({
+        from: z.string().min(1),
+        body: z.string().min(1),
+        channel: z.enum(["email", "whatsapp", "sms"]).default("email"),
+        subject: z.string().optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) return json({ error: "from and body required" }, 400);
+    const { ingestInboundReply } = await import("@/lib/server/tickets");
+    return json(ingestInboundReply({ ...parsed.data, orgId: user.orgId }));
+  }
+
   return json({ error: `No route /${key}` }, 404);
 }
 
@@ -388,6 +477,9 @@ const VoicePatch = z.object({
 });
 const CampaignPatch = z.object({
   status: z.enum(["running", "paused", "scheduled", "completed", "draft"]),
+});
+const ComplaintPatch = z.object({
+  stage: z.enum(["new", "in_progress", "escalated", "resolved"]),
 });
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
@@ -423,6 +515,28 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ path: str
     const parsed = CampaignPatch.safeParse(body);
     if (!parsed.success) return json({ error: "status required" }, 400);
     repo.updateCampaign(user.orgId, path[1], parsed.data.status);
+    if (parsed.data.status === "running") {
+      const { dialNextCampaignContact } = await import("@/lib/server/campaign-dialer");
+      const kicked = await dialNextCampaignContact(user.orgId, path[1]);
+      return json({ ok: true, ...kicked });
+    }
+    return json({ ok: true });
+  }
+
+  if (path[0] === "complaints" && path[1]) {
+    const parsed = ComplaintPatch.safeParse(body);
+    if (!parsed.success) return json({ error: "stage required" }, 400);
+    const { updateComplaintStage } = await import("@/lib/server/tickets");
+    const result = updateComplaintStage(user.orgId, path[1], parsed.data.stage);
+    if (result.error) return json({ error: result.error }, 404);
+    return json({ ok: true, id: path[1], stage: parsed.data.stage });
+  }
+
+  if (path[0] === "numbers" && path[1]) {
+    const parsed = NumberPatch.safeParse(body);
+    if (!parsed.success) return json({ error: "assignedAgentId required (null to unassign)" }, 400);
+    const result = repo.assignNumber(user.orgId, path[1], parsed.data.assignedAgentId);
+    if (result.error) return json({ error: result.error }, 404);
     return json({ ok: true });
   }
 
@@ -453,6 +567,11 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ path: s
 
   if (path[0] === "setup" && path[1] === "appointments" && path[2]) {
     ws.deleteAppointmentType(user.orgId, path[2]);
+    return json({ ok: true });
+  }
+
+  if (path[0] === "numbers" && path[1]) {
+    repo.deleteNumber(user.orgId, path[1]);
     return json({ ok: true });
   }
 

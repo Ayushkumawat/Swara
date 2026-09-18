@@ -144,6 +144,39 @@
     outline-offset: 2px;
     border-radius: 6px;
   }
+
+  /* Safety net for any native form control that slips through (date/time
+     inputs, a <select> in a third-party widget): dark chrome, themed text.
+     The console's own dropdowns are the Select component, not this. */
+  select,
+  select option,
+  input[type="date"],
+  input[type="time"],
+  input[type="datetime-local"] {
+    color-scheme: dark;
+    background-color: rgb(13 14 24);
+    color: var(--color-t1);
+  }
+  select option:checked {
+    background: rgb(124 108 246 / 0.35);
+  }
+
+  /* Smooth in-page anchor scrolling; instant when the user prefers less motion. */
+  html {
+    scroll-behavior: smooth;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 @layer components {

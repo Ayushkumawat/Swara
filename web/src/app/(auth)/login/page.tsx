@@ -7,6 +7,7 @@ import { motion } from "motion/react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, TextInput } from "@/components/ui/controls";
+import { GoogleButton, authErrorMessage } from "@/components/auth/google-button";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 
 export default function LoginPage() {
@@ -24,7 +25,8 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Google's callback redirects here with ?error=… on failure.
+  const [error, setError] = useState<string | null>(() => authErrorMessage(params.get("error")));
 
   // Where the 401 redirect came from, so login lands back on the page the
   // person was actually trying to reach. A department user deep-links to
@@ -72,7 +74,13 @@ function LoginForm() {
             />
           </Field>
           <Field label="Password">
-            <TextInput value={password} onChange={setPassword} type="password" placeholder="••••••••" />
+            <TextInput
+              value={password}
+              onChange={setPassword}
+              type="password"
+              placeholder="••••••••"
+              onSubmit={() => void submit()}
+            />
           </Field>
         </div>
 
@@ -100,9 +108,13 @@ function LoginForm() {
           <span className="h-px flex-1 bg-hairline" />
         </div>
 
-        <Button variant="ghost" full onClick={() => router.push(next)}>
-          Continue with Google
-        </Button>
+        {IS_MOCK ? (
+          <Button variant="ghost" full onClick={() => router.push(next)}>
+            Continue with Google
+          </Button>
+        ) : (
+          <GoogleButton mode="login" next={next} />
+        )}
 
         <p className="mt-5 text-center text-[12px] text-t3">
           New here?{" "}

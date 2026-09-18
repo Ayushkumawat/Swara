@@ -31,7 +31,7 @@ const EASE = [0.22, 1, 0.36, 1] as const;
  * fire. `useFailsafe` reveals anything still hidden after a beat, so a
  * missed IntersectionObserver callback costs an animation, not the content.
  */
-function useFailsafe(active: boolean, ms = 1400) {
+function useFailsafe(active: boolean, ms = 700) {
   const [expired, setExpired] = useState(false);
 
   useEffect(() => {
@@ -60,7 +60,16 @@ export function Reveal({
   const inView = useInView(ref, { once, margin: "-40px 0px -40px 0px" });
   const reduce = useReducedMotion();
   const failsafe = useFailsafe(!inView);
-  const show = inView || reduce || failsafe;
+  // A block that mounts *above* the viewport (the page was scrolled when the
+  // route changed) will never intersect on its own. Reveal it immediately
+  // rather than leaving a hole until the failsafe fires.
+  const [above, setAbove] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.getBoundingClientRect().bottom < 0) setAbove(true);
+  }, []);
+  const show = inView || reduce || failsafe || above;
 
   return (
     <motion.div
@@ -283,6 +292,14 @@ export function useLitBorder<T extends HTMLElement>() {
 
 /* ── Page transition ────────────────────────────────────────────────────── */
 
+/**
+ * Route change = short cross-fade. The exit is deliberately brief: with
+ * `mode="wait"` the new page cannot mount until the old one has left, so a
+ * long exit reads as the console hesitating. Scroll resets to the top on
+ * every change — the new page's content starts at the top, and leaving the
+ * window scrolled to where the *previous* page was is what made sections
+ * appear to load blank.
+ */
 export function PageTransition({
   children,
   routeKey,
@@ -291,14 +308,18 @@ export function PageTransition({
   routeKey: string;
 }) {
   const reduce = useReducedMotion();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" as ScrollBehavior });
+  }, [routeKey]);
+
   return (
     <AnimatePresence mode="wait" initial={false}>
       <motion.div
         key={routeKey}
-        initial={reduce ? false : { opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={reduce ? undefined : { opacity: 0, y: -6 }}
-        transition={{ duration: 0.32, ease: EASE }}
+        initial={reduce ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0, transition: { duration: 0.28, ease: EASE } }}
+        exit={reduce ? undefined : { opacity: 0, transition: { duration: 0.12, ease: "easeOut" } }}
       >
         {children}
       </motion.div>

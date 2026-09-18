@@ -1,5 +1,6 @@
 import "server-only";
 import { getDb, nowIso, uid } from "./db";
+import { addTimelineEvent, tagCustomer, touchCustomer } from "./customers";
 import { PLANS } from "@/lib/pricing";
 
 /**
@@ -402,7 +403,8 @@ export function liveCalls(orgId: string) {
     startedAt: r.started_at as string,
     sentiment: r.sentiment as string,
     sentimentScore: r.sentiment_score as number,
-    transcriptPreview: (r.summary as string) ?? undefined,
+    transcriptPreview: lastTranscriptLine(r.transcript as string | null) ?? (r.summary as string) ?? undefined,
+    source: ((r.source as string) || "phone") as "phone" | "browser",
   }));
 }
 
@@ -422,15 +424,30 @@ export function startCall(params: {
   /** Caller's number for phone calls. */
   phone?: string;
   direction?: "inbound" | "outbound";
+  plivoUuid?: string;
+  campaignId?: string;
+  campaignContactId?: string;
 }) {
   const id = uid("call");
   db().prepare(
-    `INSERT INTO calls (id, org_id, agent_id, agent_name, phone, direction, intent, source, status, started_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'live', ?)`,
+    `INSERT INTO calls (id, org_id, agent_id, agent_name, phone, direction, intent, source, status, started_at, plivo_uuid, campaign_id, campaign_contact_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'live', ?, ?, ?, ?)`,
   ).run(id, params.orgId, params.agentId, params.agentName,
     params.phone ?? (params.source === "browser" ? "browser test" : "unknown"),
-    params.direction ?? "inbound", params.intent, params.source, nowIso());
+    params.direction ?? "inbound", params.intent, params.source, nowIso(),
+    params.plivoUuid ?? null, params.campaignId ?? null, params.campaignContactId ?? null);
   return id;
+}
+
+function lastTranscriptLine(raw: string | null) {
+  if (!raw) return undefined;
+  try {
+    const turns = JSON.parse(raw) as { text?: string }[];
+    const last = [...turns].reverse().find((t) => t.text?.trim());
+    return last?.text?.slice(0, 240);
+  } catch {
+    return undefined;
+  }
 }
 
 /** A handoff mid-call: the row now belongs to the agent that took over. */
@@ -598,6 +615,7 @@ export function complaints(orgId: string) {
     assignee: (r.assignee as string) ?? null,
     callId: (r.call_id as string) ?? null,
     department: (r.dept_name as string) ?? null,
+    kind: ((r.kind as string) || "complaint") as "enquiry" | "complaint" | "grievance",
     hasRecording: Boolean(r.has_recording),
     hasConsent: Boolean(r.has_consent),
   }));
@@ -615,6 +633,9 @@ export function departments(orgId: string) {
     name: r.name as string,
     openActions: r.open_actions as number,
     keywords: JSON.parse((r.keywords as string) ?? "[]") as string[],
+    email: (r.email as string) ?? "",
+    phone: (r.phone as string) ?? "",
+    whatsapp: (r.whatsapp as string) ?? "",
   }));
 }
 
@@ -689,6 +710,7 @@ export function createComplaint(params: {
   departmentId: string;
   detail: string;
   slaHours?: number;
+  kind?: string;
 }) {
   const d = db();
   const now = nowIso();
@@ -697,13 +719,14 @@ export function createComplaint(params: {
   // it has to survive being repeated over a bad phone line.
   const ref = `#${String(40000 + Math.floor(Math.random() * 59999))}`;
   const slaDue = new Date(Date.now() + (params.slaHours ?? 24) * 3_600_000).toISOString();
+  const kind = params.kind ?? "complaint";
 
   d.prepare(
-    `INSERT INTO complaints (id, org_id, ref, title, category, severity, stage, customer_name, phone, opened_at, sla_due_at, assignee, call_id, department_id, has_recording, has_consent)
-     VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, NULL, ?, ?, ?, 1)`,
+    `INSERT INTO complaints (id, org_id, ref, title, category, severity, stage, customer_name, phone, opened_at, sla_due_at, assignee, call_id, department_id, has_recording, has_consent, kind)
+     VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?)`,
   ).run(id, params.orgId, ref, params.title, params.category, params.severity,
     params.customerName, params.phone, now, slaDue, params.callId, params.departmentId,
-    params.callId ? 1 : 0);
+    params.callId ? 1 : 0, kind);
 
   d.prepare(
     `INSERT INTO actions (id, org_id, department_id, call_id, complaint_id, title, detail, severity, status, created_at, due_at)
@@ -711,12 +734,27 @@ export function createComplaint(params: {
   ).run(uid("act"), params.orgId, params.departmentId, params.callId, id,
     params.title, params.detail, params.severity, now, slaDue);
 
-  const dept = d.prepare("SELECT name FROM departments WHERE id=?").get(params.departmentId) as { name: string };
+  const dept = d.prepare("SELECT name FROM departments WHERE id=?").get(params.departmentId) as { name: string } | undefined;
+  const deptName = dept?.name ?? "General";
   d.prepare(
     `INSERT INTO notifications (id, org_id, kind, title, body, at, severity, read, href)
      VALUES (?, ?, 'complaint', ?, ?, ?, ?, 0, '/complaints')`,
-  ).run(uid("ntf"), params.orgId, `New complaint ${ref} → ${dept.name}`,
+  ).run(uid("ntf"), params.orgId, `New ${kind} ${ref} → ${deptName}`,
     params.title, now, params.severity);
+
+  // Customer 360: the ticket shows on the caller's timeline.
+  const customerId = touchCustomer({
+    orgId: params.orgId, phone: params.phone, name: params.customerName, channel: "call",
+    sentiment: params.severity === "high" || params.severity === "critical" ? "frustrated" : undefined,
+  });
+  if (customerId) {
+    addTimelineEvent({
+      customerId, kind: "complaint",
+      title: `${kind === "complaint" ? "Complaint" : kind.replace(/^\w/, (c) => c.toUpperCase())} ${ref} · ${params.category}`,
+      detail: `${params.title} → ${deptName}`,
+    });
+    tagCustomer(customerId, kind === "complaint" ? "complained" : kind);
+  }
 
   return { id, ref };
 }
@@ -750,6 +788,18 @@ export function createBooking(params: {
      VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 0.1, ?, 0)`,
   ).run(id, params.orgId, params.customerName, params.phone, params.type,
     params.startsAt, params.durationMin, params.source);
+
+  const customerId = touchCustomer({ orgId: params.orgId, phone: params.phone, name: params.customerName, channel: "call" });
+  if (customerId) {
+    const when = new Date(params.startsAt);
+    addTimelineEvent({
+      customerId, kind: "booking",
+      title: `Booked · ${params.type}`,
+      detail: Number.isNaN(when.getTime())
+        ? params.startsAt
+        : when.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Kolkata" }),
+    });
+  }
   return id;
 }
 
@@ -790,7 +840,10 @@ export function customers(orgId: string) {
     sentiment: r.sentiment as string,
     since: r.since as string,
     lastContactAt: r.last_contact_at as string,
-    lastChannel: r.last_channel as string,
+    // Legacy rows may hold a timeline kind here; never let one bad row 400 the page.
+    lastChannel: ["call", "whatsapp", "sms", "email"].includes(r.last_channel as string)
+      ? (r.last_channel as string)
+      : "call",
     tags: JSON.parse(r.tags as string),
     timeline: (events.all(r.id) as Row[]).map((e) => ({
       id: e.id as string,
@@ -824,6 +877,49 @@ export function numbers(orgId: string) {
     monthlyRentInr: r.monthly_rent_inr as number,
     status: r.status as string,
   }));
+}
+
+/**
+ * A tenant registers the number their carrier gave them. We do not buy
+ * numbers from here — that is a Plivo console / bridge concern — but the row
+ * is what inbound routing (`agentForNumber`) and "Call me now" read, so a
+ * tenant without one cannot take or make a phone call.
+ */
+export function addNumber(orgId: string, data: {
+  e164: string; series: string; provider?: string; region?: string; assignedAgentId?: string | null;
+}) {
+  const d = db();
+  const e164 = `+${data.e164.replace(/[^\d]/g, "")}`;
+  const dupe = d.prepare("SELECT id FROM numbers WHERE org_id=? AND e164=?").get(orgId, e164);
+  if (dupe) return { error: "That number is already in this workspace" } as const;
+  const agent = data.assignedAgentId
+    ? (d.prepare("SELECT id, name FROM agents WHERE id=? AND org_id=?").get(data.assignedAgentId, orgId) as
+        | { id: string; name: string }
+        | undefined)
+    : undefined;
+  const id = uid("num");
+  d.prepare(
+    `INSERT INTO numbers (id, org_id, e164, series, provider, region, assigned_agent_id, assigned_agent_name, pickup_rate, monthly_rent_inr, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'active')`,
+  ).run(id, orgId, e164, data.series, data.provider ?? "Plivo", data.region ?? "IN", agent?.id ?? null, agent?.name ?? null);
+  return { id } as const;
+}
+
+export function assignNumber(orgId: string, id: string, agentId: string | null) {
+  const d = db();
+  const row = d.prepare("SELECT id FROM numbers WHERE id=? AND org_id=?").get(id, orgId);
+  if (!row) return { error: "No such number" } as const;
+  const agent = agentId
+    ? (d.prepare("SELECT id, name FROM agents WHERE id=? AND org_id=?").get(agentId, orgId) as { id: string; name: string } | undefined)
+    : undefined;
+  if (agentId && !agent) return { error: "No such agent" } as const;
+  d.prepare("UPDATE numbers SET assigned_agent_id=?, assigned_agent_name=? WHERE id=? AND org_id=?")
+    .run(agent?.id ?? null, agent?.name ?? null, id, orgId);
+  return { error: null } as const;
+}
+
+export function deleteNumber(orgId: string, id: string) {
+  db().prepare("DELETE FROM numbers WHERE id=? AND org_id=?").run(id, orgId);
 }
 
 /* ── team / keys / notifications / blobs ─────────────────────────────────── */

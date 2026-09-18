@@ -1,7 +1,8 @@
 import "server-only";
 import { getDb } from "./db";
-import { classifyDepartment, ingestKnowledgeDoc, searchKnowledge } from "./ai";
-import { createBooking, createComplaint } from "./repo";
+import { ingestKnowledgeDoc, searchKnowledge } from "./ai";
+import { createBooking } from "./repo";
+import { notifyTicket, lookupTickets, registerTicket, resolveTicket } from "./tickets";
 import {
   appointmentTypes,
   logToolInvocation,
@@ -58,6 +59,12 @@ async function runTool(
       return lookupOrder(orgId, args);
     case "register_complaint":
       return registerComplaint(orgId, callId, args);
+    case "lookup_ticket":
+      return lookupTicketTool(orgId, args);
+    case "notify_stakeholder":
+      return notifyTicketTool(orgId, callId, args);
+    case "resolve_ticket":
+      return resolveTicketTool(orgId, args);
     case "book_slot":
       return bookSlot(orgId, args);
     case "search_knowledge": {
@@ -284,30 +291,68 @@ async function lookupOrder(orgId: string, args: Record<string, unknown>) {
 }
 
 async function registerComplaint(orgId: string, callId: string | null, args: Record<string, unknown>) {
-  const title = String(args.title ?? "Complaint");
-  const description = String(args.description ?? "");
-  const category = String(args.category ?? "other");
-  const dept = classifyDepartment(orgId, `${category} ${title} ${description}`);
-
-  const { ref } = createComplaint({
-    orgId,
-    title,
-    category,
-    severity: String(args.severity ?? "medium"),
-    customerName: String(args.customer_name ?? "Unknown caller"),
-    phone: String(args.phone ?? ""),
-    callId,
-    departmentId: dept.id,
-    detail: description,
-  });
-
+  const filed = await registerTicket(orgId, callId, args);
   return {
     registered: true,
-    reference_number: ref,
-    routed_to: dept.name,
+    reference_number: filed.ref,
+    kind: filed.kind,
+    routed_to: filed.routed_to,
     sla: "48 business hours",
-    note: "Read the reference number back digit by digit and mention SMS + email confirmation.",
+    note: "Read the reference number back digit by digit. The caller can quote this number or their name to check status later.",
   };
+}
+
+function lookupTicketTool(orgId: string, args: Record<string, unknown>) {
+  const hits = lookupTickets(orgId, {
+    reference: str(args.reference_number) ?? str(args.reference),
+    customerName: str(args.customer_name),
+    phone: str(args.phone),
+  });
+  if (!hits.length) {
+    return {
+      found: false,
+      note: "No ticket matches that reference and name. Confirm the number digit by digit, or file a new one.",
+    };
+  }
+  const t = hits[0];
+  return {
+    found: true,
+    reference_number: t.ref,
+    kind: t.kind,
+    title: t.title,
+    stage: t.stage,
+    customer_name: t.customerName,
+    department: t.department,
+    opened_at: t.openedAt,
+    matches: hits.length,
+    note:
+      t.stage === "resolved"
+        ? "This ticket is already marked done. Tell the caller that and ask if a new issue came up."
+        : `Routed to ${t.department ?? "the team"}. Status is ${t.stage.replace("_", " ")}.`,
+  };
+}
+
+async function notifyTicketTool(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const channelRaw = String(args.channel ?? "call").toLowerCase();
+  const channel =
+    channelRaw === "email" || channelRaw === "whatsapp" || channelRaw === "sms" || channelRaw === "call"
+      ? channelRaw
+      : "call";
+  return notifyTicket(orgId, {
+    reference: str(args.reference_number) ?? str(args.reference),
+    channel,
+    targetName: str(args.target_name) ?? str(args.department),
+    message: str(args.message),
+    callId,
+  });
+}
+
+function resolveTicketTool(orgId: string, args: Record<string, unknown>) {
+  return resolveTicket(orgId, {
+    reference: str(args.reference_number) ?? str(args.reference),
+    note: str(args.note),
+    closedBy: str(args.closed_by) ?? "agent",
+  });
 }
 
 async function bookSlot(orgId: string, args: Record<string, unknown>) {

@@ -19,11 +19,10 @@ What you get:
 - **Outbound.** "Call me now" on the Agents → Test tab, and campaign dialling,
   go through `POST /dial` on the bridge.
 - **Tools on the phone.** `lookup_order`, `book_slot`, `register_complaint`,
-  `search_knowledge`, `transfer_to_human`, `handoff_to_agent`, `end_call` all
-  execute in the console exactly as in the browser. `end_call` hangs up after
-  the closing line has actually played (Plivo checkpoint); `handoff_to_agent`
-  swaps the persona mid-call without dropping the leg; `transfer_to_human`
-  bridges the caller to the desk's number.
+  `lookup_ticket`, `notify_stakeholder`, `resolve_ticket`, `search_knowledge`,
+  `transfer_to_human`, `handoff_to_agent`, `end_call` all execute in the console.
+  Greeting discloses recording. Plivo records the leg into `recordings`.
+  Supervisors can silent-listen and take over from Live Calls.
 - **Every call is a row.** Live transcript on the Live calls board while the
   call is up; minutes, tokens and cost on completion; the post-call pipeline
   (summary, routing, QA) runs as for browser calls.
@@ -139,9 +138,14 @@ and outcome. Billing and the post-call pipeline follow from there.
 - One bridge process handles many concurrent calls (asyncio); scale
   horizontally behind a load balancer — calls are independent and the state
   lives in the console.
-- Recording and consent: Plivo can record with `<Record>` or the Record API
-  alongside the stream. Not wired yet; the console's `recordings` and
-  `consent_artefacts` tables are where it lands.
+- Recording and consent: the bridge starts a Plivo recording on stream start
+  and posts the URL to `recordings`. Every calling agent discloses recording in
+  the greeting; a `consent_artefacts` row is written when the call opens.
+- Live-listen / takeover: Live Calls → Listen opens a silent monitor websocket
+  on the bridge. Take over / Transfer posts `/intervene` and bridges a human
+  onto a Plivo conference (takeover) or Dial (transfer).
+- Campaigns: PATCH a campaign to `running` dials the next queued contact with
+  answering-machine detection. Voicemail hangs up and the next contact is dialed.
 - India-specific: DND scrubbing before outbound (Campaigns does this), DLT
   template IDs for any SMS follow-up, and TRAI's 140-series requirement for
   promotional outbound.

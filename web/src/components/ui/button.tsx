@@ -94,6 +94,42 @@ export function ButtonLink({
   );
 }
 
+/**
+ * A full-page navigation styled as a button — for destinations that are not
+ * Next pages (OAuth start, file downloads), where <Link>'s client routing is
+ * exactly what we do not want.
+ */
+export function ExternalButtonLink({
+  children,
+  href,
+  variant = "ghost",
+  size = "md",
+  className,
+  full,
+  onClick,
+}: {
+  children: React.ReactNode;
+  href: string;
+  variant?: Variant;
+  size?: Size;
+  className?: string;
+  full?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <motion.a
+      href={href}
+      onClick={onClick}
+      whileHover={{ y: -1 }}
+      whileTap={{ scale: 0.97 }}
+      transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+      className={cn(base, variants[variant], sizes[size], full && "w-full", className)}
+    >
+      {children}
+    </motion.a>
+  );
+}
+
 export function IconButton({
   children,
   onClick,

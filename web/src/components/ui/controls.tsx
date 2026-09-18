@@ -1,8 +1,11 @@
 "use client";
 
-import { motion } from "motion/react";
-import { useId } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useMounted } from "@/lib/use-mounted";
 
 /** Segmented tab bar. The active pill slides between items via a shared
  *  layoutId, so switching reads as one control rather than two states. */
@@ -227,24 +230,284 @@ export function TextInput({
   placeholder,
   type = "text",
   className,
+  onSubmit,
+  autoFocus,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   type?: string;
   className?: string;
+  /** Enter key. Forms here are small enough that this replaces <form>. */
+  onSubmit?: () => void;
+  autoFocus?: boolean;
 }) {
   return (
     <input
       type={type}
       value={value}
+      autoFocus={autoFocus}
       onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onSubmit ? (e) => { if (e.key === "Enter") { e.preventDefault(); onSubmit(); } } : undefined}
       placeholder={placeholder}
       className={cn(
         "glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none transition-colors placeholder:text-t3 focus:border-cyan/45",
         className,
       )}
     />
+  );
+}
+
+/* ── Select ─────────────────────────────────────────────────────────────── */
+
+export type SelectOption<T extends string> = {
+  value: T;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+};
+
+const EASE = [0.22, 1, 0.36, 1] as const;
+
+/**
+ * The dropdown. A native <select> pops the operating system's own list —
+ * white, un-themed, and wrong on a dark console — so the list is ours: a
+ * portal-mounted listbox positioned under the trigger, with the same glass
+ * as every other surface, full keyboard support, and flip-to-above when the
+ * viewport runs out below.
+ */
+export function Select<T extends string>({
+  value,
+  onChange,
+  options,
+  placeholder = "Choose…",
+  className,
+  disabled,
+  size = "md",
+  "aria-label": ariaLabel,
+}: {
+  value: T | "";
+  onChange: (v: T) => void;
+  options: readonly SelectOption<T>[];
+  placeholder?: string;
+  className?: string;
+  disabled?: boolean;
+  size?: "sm" | "md";
+  "aria-label"?: string;
+}) {
+  const id = useId();
+  const reduce = useReducedMotion();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; up: boolean } | null>(null);
+  // Portals cannot be hydrated; mount the list container only on the client.
+  const mounted = useMounted();
+
+  const selected = options.find((o) => o.value === value);
+  const enabled = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
+
+  const place = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const estimate = Math.min(options.length, 8) * 36 + 12;
+    const below = window.innerHeight - r.bottom;
+    const up = below < estimate + 12 && r.top > below;
+    setPos({ top: up ? r.top - 6 : r.bottom + 6, left: r.left, width: r.width, up });
+  }, [options.length]);
+
+  // Opening is an event, so position and the highlighted row are computed
+  // right there rather than in an effect that runs after the first paint.
+  const openList = () => {
+    if (disabled) return;
+    place();
+    const i = options.findIndex((o) => o.value === value);
+    setActive(i >= 0 ? i : enabled[0] ?? -1);
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: Event) => {
+      const t = e.target as Node | null;
+      if (triggerRef.current?.contains(t) || listRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onScroll = (e: Event) => {
+      if (listRef.current?.contains(e.target as Node)) return;
+      place();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open, place]);
+
+  useEffect(() => {
+    if (!open || active < 0) return;
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  const commit = (i: number) => {
+    const o = options[i];
+    if (!o || o.disabled) return;
+    onChange(o.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const step = (dir: 1 | -1) => {
+    if (!enabled.length) return;
+    const at = enabled.indexOf(active);
+    const next = at === -1 ? (dir === 1 ? enabled[0] : enabled[enabled.length - 1])
+      : enabled[(at + dir + enabled.length) % enabled.length];
+    setActive(next);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        if (!open) openList();
+        else step(1);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        if (!open) openList();
+        else step(-1);
+        break;
+      case "Home":
+        if (open) { e.preventDefault(); setActive(enabled[0] ?? -1); }
+        break;
+      case "End":
+        if (open) { e.preventDefault(); setActive(enabled[enabled.length - 1] ?? -1); }
+        break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        if (!open) openList();
+        else commit(active);
+        break;
+      case "Escape":
+        if (open) { e.preventDefault(); setOpen(false); }
+        break;
+      case "Tab":
+        setOpen(false);
+        break;
+      default: {
+        // Type-ahead: jump to the first option starting with the key.
+        if (e.key.length === 1 && /\S/.test(e.key)) {
+          const k = e.key.toLowerCase();
+          const start = active + 1;
+          const order = [...options.keys()].map((i) => (start + i) % options.length);
+          const hit = order.find((i) => !options[i].disabled && options[i].label.toLowerCase().startsWith(k));
+          if (hit !== undefined) {
+            setActive(hit);
+            if (!open) commit(hit);
+          }
+        }
+      }
+    }
+  };
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-list` : undefined}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={() => (open ? setOpen(false) : openList())}
+        onKeyDown={onKeyDown}
+        className={cn(
+          "glass flex w-full items-center justify-between gap-2 rounded-[11px] text-left outline-none transition-colors",
+          size === "sm" ? "px-3 py-1.5 text-[12px]" : "px-3.5 py-2.5 text-[13px]",
+          open ? "border-cyan/45" : "focus-visible:border-cyan/45",
+          disabled && "cursor-not-allowed opacity-50",
+          className,
+        )}
+      >
+        <span className={cn("min-w-0 truncate", selected ? "text-t1" : "text-t3")}>
+          {selected?.label ?? placeholder}
+        </span>
+        <ChevronDown
+          className={cn("size-3.5 shrink-0 text-t3 transition-transform duration-200", open && "rotate-180")}
+          strokeWidth={2}
+        />
+      </button>
+
+      {mounted
+        ? createPortal(
+            <AnimatePresence>
+              {open && pos ? (
+                <motion.div
+                  ref={listRef}
+                  id={`${id}-list`}
+                  role="listbox"
+                  aria-activedescendant={active >= 0 ? `${id}-opt-${active}` : undefined}
+                  initial={reduce ? false : { opacity: 0, y: pos.up ? 4 : -4, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={reduce ? undefined : { opacity: 0, y: pos.up ? 4 : -4, scale: 0.98 }}
+                  transition={{ duration: 0.16, ease: EASE }}
+                  style={{
+                    position: "fixed",
+                    left: pos.left,
+                    width: pos.width,
+                    ...(pos.up ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
+                    transformOrigin: pos.up ? "bottom center" : "top center",
+                  }}
+                  className="glass-strong z-[200] max-h-[300px] overflow-y-auto rounded-[12px] p-1 shadow-[0_18px_50px_-12px_rgba(0,0,0,0.6)]"
+                >
+                  {options.length === 0 ? (
+                    <div className="px-3 py-2.5 text-[12px] text-t3">Nothing to choose from yet</div>
+                  ) : null}
+                  {options.map((o, i) => {
+                    const isSel = o.value === value;
+                    const isActive = i === active;
+                    return (
+                      <div
+                        key={o.value}
+                        id={`${id}-opt-${i}`}
+                        data-index={i}
+                        role="option"
+                        aria-selected={isSel}
+                        aria-disabled={o.disabled}
+                        onPointerMove={() => !o.disabled && active !== i && setActive(i)}
+                        onClick={() => commit(i)}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-2 text-[12.5px] transition-colors",
+                          isActive ? "bg-white/[0.09] text-t1" : "text-t2",
+                          o.disabled && "cursor-not-allowed opacity-40",
+                        )}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate">{o.label}</span>
+                          {o.hint ? <span className="block truncate text-[10.5px] text-t3">{o.hint}</span> : null}
+                        </span>
+                        {isSel ? <Check className="size-3.5 shrink-0 text-cyan" strokeWidth={2.2} /> : null}
+                      </div>
+                    );
+                  })}
+                </motion.div>
+              ) : null}
+            </AnimatePresence>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 

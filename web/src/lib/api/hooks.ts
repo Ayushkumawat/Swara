@@ -29,6 +29,7 @@ export const qk = {
   apiKeys: ["api-keys"] as const,
   notifications: ["notifications"] as const,
   departments: ["departments"] as const,
+  departmentSuggestions: ["departments", "suggestions"] as const,
   actions: ["actions"] as const,
   invoices: ["billing", "invoices"] as const,
   me: ["auth", "me"] as const,
@@ -117,6 +118,10 @@ export const useNotifications = () =>
 
 export const useDepartments = () =>
   useQuery({ queryKey: qk.departments, queryFn: endpoints.departments });
+
+/** Desks the org's use case usually has and it has not added yet. */
+export const useDepartmentSuggestions = () =>
+  useQuery({ queryKey: qk.departmentSuggestions, queryFn: endpoints.departmentSuggestions });
 
 /** The signed-in user's action queue — department-scoped server-side. Polls
  *  because new actions arrive from live calls ending, not from this user. */

@@ -122,6 +122,10 @@ export async function POST(request: Request) {
         intent: PERSONA_INTENT[agentId] ?? prompt.intent ?? "other",
         source: "browser",
       });
+    if (!callId && !prompt.setupTools) {
+      const { captureRecordingConsent } = await import("@/lib/server/tickets");
+      captureRecordingConsent(orgId, activeCallId);
+    }
 
     return NextResponse.json(
       {

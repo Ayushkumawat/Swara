@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "db:reset": "node scripts/db-reset.mjs",
     "live:smoke": "node scripts/live-smoke.mjs",
     "live:smoke:resume": "node scripts/live-resume-smoke.mjs"
   },

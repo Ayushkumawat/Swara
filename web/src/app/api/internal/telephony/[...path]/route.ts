@@ -23,6 +23,14 @@ import { finishCall } from "@/lib/server/pipeline";
 import { agentForNumber, firstLiveAgent, reassignCall, startCall, updateLiveTranscript } from "@/lib/server/repo";
 import { executeTool } from "@/lib/server/tools";
 import { getDb } from "@/lib/server/db";
+import {
+  attachPlivoUuid,
+  captureRecordingConsent,
+  ingestInboundReply,
+  saveRecording,
+  tagCampaignContact,
+} from "@/lib/server/tickets";
+import { onCampaignCallEnded } from "@/lib/server/campaign-dialer";
 
 export const runtime = "nodejs";
 
@@ -49,6 +57,9 @@ const SessionBody = z.object({
   /** Reuse the call row on handoff / reconnect. */
   callId: z.string().optional(),
   handoff: z.boolean().default(false),
+  briefing: z.string().optional(),
+  campaignId: z.string().optional(),
+  campaignContactId: z.string().optional(),
 });
 
 const ToolBody = z.object({
@@ -96,7 +107,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     if (!agentId) agentId = firstLiveAgent(orgId);
     if (!agentId) return json({ error: "No agent is assigned to this number and the workspace has no agents." }, 404);
 
-    const prompt = composeLivePrompt(orgId, agentId);
+    const prompt = composeLivePrompt(orgId, agentId, undefined, {
+      fromNumber: p.direction === "inbound" ? p.from : undefined,
+      briefing: p.briefing,
+    });
     let callId = p.callId ?? null;
     if (callId && p.handoff) {
       reassignCall(orgId, callId, agentId, prompt.name);
@@ -109,7 +123,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
         source: "phone",
         direction: p.direction,
         phone: (p.direction === "inbound" ? p.from : p.to) ?? "unknown",
+        plivoUuid: p.plivoCallUuid,
+        campaignId: p.campaignId,
+        campaignContactId: p.campaignContactId,
       });
+      captureRecordingConsent(orgId, callId);
+    }
+    if (p.plivoCallUuid && callId) attachPlivoUuid(orgId, callId, p.plivoCallUuid);
+    if (p.campaignId && p.campaignContactId && callId) {
+      tagCampaignContact(orgId, callId, p.campaignId, p.campaignContactId);
     }
     return json({
       callId,
@@ -149,7 +171,41 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
         .run(outcome, callId, orgId);
     }
     await finishCall({ orgId, callId, ...rest });
+    await onCampaignCallEnded(orgId, callId, outcome);
     return json({ ok: true });
+  }
+
+  if (key === "recording") {
+    const parsed = z
+      .object({
+        orgId: z.string(),
+        callId: z.string(),
+        url: z.string().min(1),
+        durationSec: z.number().optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) return json({ error: "Invalid recording" }, 400);
+    saveRecording({
+      orgId: parsed.data.orgId,
+      callId: parsed.data.callId,
+      objectKey: parsed.data.url,
+      durationSec: parsed.data.durationSec,
+    });
+    return json({ ok: true });
+  }
+
+  if (key === "ticket-reply") {
+    const parsed = z
+      .object({
+        orgId: z.string().optional(),
+        from: z.string().min(1),
+        body: z.string().min(1),
+        channel: z.enum(["email", "whatsapp", "sms"]),
+        subject: z.string().optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) return json({ error: "Invalid reply" }, 400);
+    return json(ingestInboundReply(parsed.data));
   }
 
   return json({ error: `No route /${key}` }, 404);

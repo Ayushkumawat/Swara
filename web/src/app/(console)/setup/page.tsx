@@ -12,7 +12,7 @@ import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { Field, Tabs, TextInput, Toggle } from "@/components/ui/controls";
+import { Field, Select, Tabs, TextInput, Toggle } from "@/components/ui/controls";
 import { CardSkeleton, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
@@ -24,6 +24,7 @@ import {
   qk,
   useAppointmentTypes,
   useConnectors,
+  useDepartmentSuggestions,
   useDepartments,
   useKnowledge,
   usePlaybook,
@@ -356,26 +357,60 @@ function PlaybookForm({ initial, busy, onSave }: { initial: Playbook; busy: bool
 
 function DepartmentsTab() {
   const query = useDepartments();
+  const suggestions = useDepartmentSuggestions();
   const qc = useQueryClient();
-  const [name, setName] = useState("");
-  const [keywords, setKeywords] = useState("");
+  const emptyForm = { name: "", keywords: "", email: "", phone: "", whatsapp: "" };
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const set = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: qk.departments });
+    void qc.invalidateQueries({ queryKey: qk.departmentSuggestions });
+    void qc.invalidateQueries({ queryKey: qk.setupStatus });
+  };
 
   const save = async () => {
-    if (!name.trim()) return;
+    if (!form.name.trim()) return;
     try {
       if (!IS_MOCK) {
         await mutations.saveDepartment({
-          name: name.trim(),
-          keywords: keywords.split(",").map((k) => k.trim()).filter(Boolean),
+          id: editingId ?? undefined,
+          name: form.name.trim(),
+          keywords: form.keywords.split(",").map((k) => k.trim()).filter(Boolean),
+          email: form.email.trim() || undefined,
+          phone: form.phone.trim() || undefined,
+          whatsapp: form.whatsapp.trim() || undefined,
         });
       }
-      toast.success(`${name} can now own follow-up`);
-      setName("");
-      setKeywords("");
-      void qc.invalidateQueries({ queryKey: qk.departments });
+      toast.success(editingId ? `${form.name} updated` : `${form.name} can now own follow-up`);
+      setForm(emptyForm);
+      setEditingId(null);
+      invalidate();
     } catch {
       toast.error("Could not save department");
     }
+  };
+
+  const addSuggested = async (s: { slug: string; name: string; keywords: string[] }) => {
+    try {
+      if (!IS_MOCK) await mutations.saveDepartment(s);
+      toast.success(`Added ${s.name}`);
+      invalidate();
+    } catch {
+      toast.error("Could not add department");
+    }
+  };
+
+  const edit = (d: Department) => {
+    setEditingId(d.id);
+    setForm({
+      name: d.name,
+      keywords: (d.keywords ?? []).join(", "),
+      email: d.email ?? "",
+      phone: d.phone ?? "",
+      whatsapp: d.whatsapp ?? "",
+    });
   };
 
   const remove = async (dept: Department) => {
@@ -388,7 +423,11 @@ function DepartmentsTab() {
         }
       }
       toast.success(`Removed ${dept.name}`);
-      void qc.invalidateQueries({ queryKey: qk.departments });
+      if (editingId === dept.id) {
+        setEditingId(null);
+        setForm(emptyForm);
+      }
+      invalidate();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not remove department");
     }
@@ -399,39 +438,88 @@ function DepartmentsTab() {
       <Card interactive={false}>
         <CardHead
           title="Departments"
-          sub="Each desk sees only its action queue. Keywords route a complaint when the model is unsure."
+          sub="Each desk sees only its action queue. Keywords route a complaint when the model is unsure; the contact details are where the agent sends a ticket."
         />
-        <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+
+        {suggestions.data?.length ? (
+          <div className="mb-4 rounded-[14px] border border-dashed border-hairline bg-white/[0.02] p-3">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.07em] text-t3">
+              Common for your kind of business — add with one click
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {suggestions.data.map((s) => (
+                <button
+                  key={s.slug}
+                  type="button"
+                  onClick={() => void addSuggested(s)}
+                  className="glass flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] text-t2 transition-colors hover:border-cyan/40 hover:text-t1"
+                >
+                  <Plus className="size-3" />
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mb-4 grid gap-3 sm:grid-cols-2">
           <Field label="Department name">
-            <TextInput value={name} onChange={setName} placeholder="Housekeeping" />
+            <TextInput value={form.name} onChange={set("name")} placeholder="Housekeeping" onSubmit={() => void save()} />
           </Field>
-          <Field label="Route on these words" hint="Comma-separated">
-            <TextInput value={keywords} onChange={setKeywords} placeholder="dirty, garbage, toilet" />
+          <Field label="Route on these words" hint="Comma-separated. Used when the model is unsure.">
+            <TextInput value={form.keywords} onChange={set("keywords")} placeholder="dirty, garbage, toilet" />
           </Field>
-          <div className="flex items-end">
-            <Button variant="primary" onClick={() => void save()}>
-              <Plus className="size-3.5" />
-              Add
-            </Button>
+          <Field label="Email" hint="Tickets go here when the agent notifies this desk">
+            <TextInput value={form.email} onChange={set("email")} type="email" placeholder="housekeeping@yourcompany.in" />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Phone">
+              <TextInput value={form.phone} onChange={set("phone")} placeholder="+91 98…" />
+            </Field>
+            <Field label="WhatsApp">
+              <TextInput value={form.whatsapp} onChange={set("whatsapp")} placeholder="+91 98…" />
+            </Field>
           </div>
         </div>
+        <div className="mb-4 flex flex-wrap gap-2">
+          <Button variant="primary" onClick={() => void save()} disabled={!form.name.trim()}>
+            {editingId ? <Check className="size-3.5" /> : <Plus className="size-3.5" />}
+            {editingId ? "Save changes" : "Add department"}
+          </Button>
+          {editingId ? (
+            <Button variant="subtle" onClick={() => { setEditingId(null); setForm(emptyForm); }}>
+              Cancel
+            </Button>
+          ) : null}
+        </div>
+
         <QueryBoundary query={query} skeleton={<RowsSkeleton rows={4} />}>
           {(rows) => (
             <div>
-              {rows.map((d) => (
-                <ListRow key={d.id}>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] text-t1">{d.name}</span>
-                    <span className="text-[11px] text-t3">
-                      {d.keywords?.length ? d.keywords.join(" · ") : d.slug}
-                      {d.openActions ? ` · ${d.openActions} open` : ""}
+              {rows.map((d) => {
+                const contact = [d.email, d.phone && `☏ ${d.phone}`, d.whatsapp && `WA ${d.whatsapp}`].filter(Boolean).join(" · ");
+                return (
+                  <ListRow key={d.id} className={cn(editingId === d.id && "bg-white/[0.04]")}>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2 text-[13px] text-t1">
+                        {d.name}
+                        {d.openActions ? <Pill tone="amber">{d.openActions} open</Pill> : null}
+                        {!contact ? <Pill tone="grey">no contact</Pill> : null}
+                      </span>
+                      <span className="block truncate text-[11px] text-t3">
+                        {d.keywords?.length ? d.keywords.join(" · ") : "No routing words"}
+                      </span>
+                      {contact ? <span className="block truncate text-[11px] text-t3">{contact}</span> : null}
                     </span>
-                  </span>
-                  <Button size="sm" variant="subtle" onClick={() => void remove(d)}>
-                    <Trash2 className="size-3" />
-                  </Button>
-                </ListRow>
-              ))}
+                    <Button size="sm" variant="subtle" onClick={() => edit(d)}>
+                      Edit
+                    </Button>
+                    <Button size="sm" variant="subtle" onClick={() => void remove(d)} disabled={rows.length <= 1}>
+                      <Trash2 className="size-3" />
+                    </Button>
+                  </ListRow>
+                );
+              })}
             </div>
           )}
         </QueryBoundary>
@@ -505,18 +593,11 @@ function TransfersTab() {
             />
           </Field>
           <Field label="Department (optional)">
-            <select
+            <Select
               value={form.departmentId}
-              onChange={(e) => setForm({ ...form, departmentId: e.target.value })}
-              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-            >
-              <option value="">None</option>
-              {(depts.data ?? []).map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setForm({ ...form, departmentId: v })}
+              options={[{ value: "", label: "None" }, ...(depts.data ?? []).map((d) => ({ value: d.id, label: d.name }))]}
+            />
           </Field>
         </div>
         <Button variant="primary" className="mb-4" onClick={() => void save()}>
@@ -754,14 +835,14 @@ function OrdersTab() {
             <TextInput value={name} onChange={setName} />
           </Field>
           <Field label="Mode">
-            <select
+            <Select<"demo" | "rest">
               value={kind}
-              onChange={(e) => setKind(e.target.value as "demo" | "rest")}
-              className="glass w-full rounded-[11px] px-3.5 py-2.5 text-[13px] text-t1 outline-none"
-            >
-              <option value="demo">Demo catalogue (no setup)</option>
-              <option value="rest">Your order API</option>
-            </select>
+              onChange={setKind}
+              options={[
+                { value: "demo", label: "Demo catalogue (no setup)", hint: "Deterministic orders for test calls" },
+                { value: "rest", label: "Your order API", hint: "GET endpoint, we append order_id or phone" },
+              ]}
+            />
           </Field>
           {kind === "rest" ? (
             <>
