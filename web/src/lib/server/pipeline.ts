@@ -3,6 +3,7 @@ import { getDb, nowIso, uid } from "./db";
 import { analyzeCall } from "./ai";
 import { completeCall, updateCallAnalysis } from "./repo";
 import { recordCallForCustomer } from "./customers";
+import { addTicketMessage, registerTicket } from "./tickets";
 import { IntentSchema } from "@/lib/api/schemas";
 
 /**
@@ -29,6 +30,22 @@ const AI_INR_PER_1K_TOKENS = Number(process.env.AI_INR_PER_1K_TOKENS ?? 0.28);
 const TELEPHONY_INR_PER_MIN = Number(process.env.TELEPHONY_INR_PER_MIN ?? 0.45);
 
 export type Turn = { role: string; text: string };
+
+/**
+ * Did the agent tell the caller a ticket exists? Looks for the phrases a
+ * Live agent uses when it skips the tool: a hash-number, or "registered /
+ * darj / nondavla / logged" in an agent turn, on a call analysis read as a
+ * complaint.
+ */
+function agentClaimedTicket(transcript: Turn[], intent: string) {
+  const agentText = transcript
+    .filter((t) => t.role !== "user" && t.role !== "caller")
+    .map((t) => t.text)
+    .join(" ");
+  const saidNumber = /#\s?\d{4,6}\b/.test(agentText) || /reference (number|no\.?)|ticket (number|no\.?)|complaint (number|no\.?)|शिकायत संख्या|संदर्भ/i.test(agentText);
+  const saidRegistered = /\b(registered|darj|nondavl|nond|logged|filed|raised|complaint (has been )?(noted|taken))\b/i.test(agentText);
+  return intent === "complaint" && (saidNumber || saidRegistered);
+}
 
 export async function finishCall(params: {
   orgId: string;
@@ -106,9 +123,38 @@ export async function finishCall(params: {
       db.prepare("UPDATE calls SET customer_name=? WHERE id=?").run(analysis.customerName, params.callId);
     }
 
-    const alreadyQueued = (db
+    let alreadyQueued = (db
       .prepare("SELECT COUNT(*) n FROM actions WHERE call_id=?")
       .get(params.callId) as { n: number }).n;
+
+    // Safety net. If the agent told the caller "registered, your number is…"
+    // but never called register_complaint, the caller believes a ticket
+    // exists and nothing does. File it now, from the transcript, so the
+    // Tickets board and the caller's next call both see it. Tagged so the
+    // desk knows the number the caller heard is not this one.
+    const hasTicket = (db
+      .prepare("SELECT COUNT(*) n FROM complaints WHERE call_id=? AND org_id=?")
+      .get(params.callId, params.orgId) as { n: number }).n > 0;
+    if (!hasTicket && !alreadyQueued && call.source === "phone" && agentClaimedTicket(params.transcript, analysis.intent)) {
+      const item = analysis.actionItems[0];
+      const filed = await registerTicket(params.orgId, params.callId, {
+        customer_name: analysis.customerName ?? call.customer_name ?? "Unknown caller",
+        phone: call.phone ?? "",
+        title: item?.title ?? analysis.summary.slice(0, 80),
+        description: `${analysis.summary}${item?.detail ? `\n\n${item.detail}` : ""}`,
+        category: "other",
+        kind: "complaint",
+        severity: item?.severity ?? "medium",
+      });
+      addTicketMessage({
+        orgId: params.orgId,
+        complaintId: filed.id,
+        direction: "in",
+        channel: "note",
+        body: "Filed automatically after the call. The agent told the caller a complaint was registered but did not call register_complaint, so any number the caller heard is not real — quote this reference when you reach them.",
+      });
+      alreadyQueued = 1;
+    }
 
     if (!alreadyQueued && analysis.departmentSlug && analysis.actionItems.length > 0) {
       const dept = db

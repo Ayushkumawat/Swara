@@ -4,7 +4,11 @@ import type { AgentPlan, FlowEdge, FlowNode, Intent, PlannedAgent } from "@/lib/
 import { IntentSchema } from "@/lib/api/schemas";
 import { getDb } from "./db";
 import { createAgent, updateAgent } from "./repo";
+import { ingestKnowledgeDoc } from "./ai";
+import { AGENT_LANGUAGES, FIRST_NAMES, buildRolePrompt, defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
+import { VOICE_CATALOG } from "@/lib/live/voices";
 import { appointmentTypes, playbook, setupStatus, transferTargets } from "./workspace";
+import { TEXT_MODELS } from "./models";
 
 /**
  * Swara's planning brain.
@@ -17,12 +21,10 @@ import { appointmentTypes, playbook, setupStatus, transferTargets } from "./work
  * Gemini proposes the *shape* — which agents, what each owns, who hands off to
  * whom, what is still unknown. The flows themselves are built here from that
  * shape, deterministically, so every generated graph is one the compiler and
- * the tools can actually run. When there is no API key (or the model is down)
- * a rules-based planner produces a sensible plan from the playbook alone, so
- * the wizard never dead-ends.
+ * the tools can actually run. If the model is down, this throws and leaves
+ * whatever plan the owner already has — it does not substitute a template.
  */
 
-const TEXT_MODELS = [process.env.GEMINI_TEXT_MODEL ?? "gemini-flash-latest", "gemini-3.6-flash"];
 
 type Shape = {
   summary: string;
@@ -31,6 +33,14 @@ type Shape = {
     key: string;
     name: string;
     job: string;
+    /** Long role, written by the model. The stored prompt wraps this. */
+    role?: string;
+    /** Facts only this agent may quote. Empty if the owner gave none. */
+    knowledge?: string;
+    /** First name the agent introduces itself with. */
+    personaName?: string;
+    /** Catalog voice name, chosen for the job and the persona's gender. */
+    voice?: string;
     intent: Intent;
     direction: "inbound" | "outbound" | "both";
     handsOffTo: string[];
@@ -73,11 +83,26 @@ export async function planAgents(
   input: { brief: string; answers?: Record<string, string> },
 ): Promise<AgentPlan> {
   const ctx = planContext(orgId);
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("Swara needs a Gemini API key. Nothing was changed.");
+  }
   const brief = [input.brief, ...Object.entries(input.answers ?? {}).map(([q, a]) => `Q: ${q}\nA: ${a}`)]
     .filter(Boolean)
     .join("\n\n");
 
-  const shape = (await geminiShape(brief, ctx)) ?? heuristicShape(brief, ctx);
+  // A sentence in the brief beats a leftover desk. "We have no human agents"
+  // must not produce a transfer step, even if an old desk row is still stored.
+  if (ctx.playbook.extra.humanEscalation === false || ownerSaidNoHumans(`${brief}\n${ctx.playbook.transferPolicy}`)) {
+    ctx.playbook.extra.humanEscalation = false;
+    ctx.transfers = [];
+  }
+
+  const shape = await geminiShape(brief, ctx);
+  if (!shape) {
+    throw new Error(
+      "Swara's model is unavailable right now. Your current plan was not replaced — retry.",
+    );
+  }
   const source = shape.source;
   const agents = materialise(shape, ctx);
 
@@ -124,6 +149,7 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
     `BOOKABLE: ${ctx.appointmentTypes.map((a) => a.name).join(", ") || "none"}`,
     `KNOWLEDGE DOCS: ${ctx.knowledgeDocs}`,
     `EXISTING AGENTS: ${ctx.existingAgents.map((a) => a.name).join(", ") || "none"}`,
+    `VOICES AVAILABLE: ${VOICE_CATALOG.map((v) => `${v.name} (${v.gender}, ${v.descriptor})`).join("; ")}`,
   ].join("\n");
 
   for (const model of TEXT_MODELS) {
@@ -139,7 +165,14 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
           "- handsOffTo lists the keys of other agents in THIS plan the agent may pass a caller to.",
           "- Outbound agents (reminders, lead follow-up, collections) are direction outbound and are never front door.",
           "- questions: at most 3 things you would still ask the owner before going live. Empty if the brief is clear.",
-          "- Write job in 2-3 plain sentences: what the agent does on the call and what it must never do.",
+          "- job: one sentence, the job title in prose.",
+          "- personaName: the first name this agent uses on the call. If the brief says 'introduces itself as X' or names the agent after a person (e.g. 'Aarav'), use exactly that. Otherwise pick a common Indian first name that fits the voice's gender. Two agents in one plan must not share a name.",
+          "- voice: one of VOICES AVAILABLE, by name. If the brief names a voice for the agent, use it. Otherwise: complaints and grievances get a calm or soft voice; sales and reminders get a brighter one; a front door gets a crisp one. The gender must match personaName.",
+          "- role: 10-16 sentences written as a senior trainer briefing a new hire for THIS job at THIS business. Cover, in order: (1) the one-sentence opening line — name, business, then an open question or the reason for calling; (2) how to find out what the caller wants: listen, let them finish, one open question if unclear; (3) the details this job actually needs, and the moment each is asked for — never name and phone as an opener, and never a phone number on an inbound call since you already have it; (4) the three most common situations for this job at this business and what to do in each; (5) what to say when you do not have the answer; (6) how to close. Write it as instructions to the agent, in plain speech. No headings, no bullet points.",
+          "- A realistic agent listens more than it asks, never asks for what it was already told, and never asks two things in one turn. Say this in the role in the agent's own terms.",
+          "- knowledge: only facts the owner actually gave that THIS agent must quote (policy, fees, hours, what to say). Empty string if none. Do not invent prices or policies. Do not copy another agent's facts into this one.",
+          "- If HUMAN ESCALATION is no, or there is no transfer desk, no agent may transfer to a person. They take a callback instead.",
+          "- Every agent follows the caller's language automatically. Do not assign a single language.",
           "- Prefer Indian context: Hinglish callers, COD, DND rules for outbound.",
           "",
           "WORKSPACE:",
@@ -163,12 +196,16 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
                     key: { type: Type.STRING },
                     name: { type: Type.STRING },
                     job: { type: Type.STRING },
+                    role: { type: Type.STRING },
+                    knowledge: { type: Type.STRING },
+                    personaName: { type: Type.STRING },
+                    voice: { type: Type.STRING, enum: VOICE_CATALOG.map((v) => v.name) },
                     intent: { type: Type.STRING, enum: [...IntentSchema.options] },
                     direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
                     handsOffTo: { type: Type.ARRAY, items: { type: Type.STRING } },
                     isFrontDoor: { type: Type.BOOLEAN },
                   },
-                  required: ["key", "name", "job", "intent", "direction", "handsOffTo", "isFrontDoor"],
+                  required: ["key", "name", "job", "role", "knowledge", "personaName", "voice", "intent", "direction", "handsOffTo", "isFrontDoor"],
                 },
               },
             },
@@ -196,72 +233,6 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
   return null;
 }
 
-/* ── Rules fallback ───────────────────────────────────────────────────────── */
-
-function heuristicShape(brief: string, ctx: PlanContext): Shape & { source: "heuristic" } {
-  const text = `${brief} ${ctx.playbook.businessType}`.toLowerCase();
-  const useCase = String(ctx.playbook.extra.useCase ?? "other");
-  const has = (...words: string[]) => words.some((w) => text.includes(w));
-
-  const agents: Shape["agents"] = [];
-  const add = (a: Shape["agents"][number]) => {
-    if (!agents.some((x) => x.key === a.key)) agents.push(a);
-  };
-
-  const clinic = useCase === "clinic" || has("clinic", "doctor", "hospital", "patient", "dentist", "appointment");
-  const ecommerce = useCase === "ecommerce" || has("order", "delivery", "shipment", "cod", "d2c", "ecommerce", "e-commerce", "store");
-  const care = useCase === "customer_care" || has("customer care", "support", "complaint", "refund", "grievance", "helpline");
-  const sales = ctx.playbook.extra.hasSales === true || useCase === "sales" || has("sales", "lead", "enquiry", "demo", "quote");
-  const civic = useCase === "civic" || has("metro", "municipal", "citizen", "civic", "transport");
-
-  if (clinic || ctx.appointmentTypes.length > 0) {
-    add({ key: "booking", name: "Appointment booking", job: "Books, reschedules and cancels appointments. Offers two concrete slots from the configured types, confirms date, time and location, then books. Never promises a slot it has not confirmed.", intent: "booking", direction: "inbound", handsOffTo: [], isFrontDoor: false });
-    add({ key: "reminder", name: "Appointment reminder", job: "Calls the day before to confirm the appointment, offers to reschedule if needed, and notes cancellations. Brief and polite; respects quiet hours.", intent: "booking", direction: "outbound", handsOffTo: [], isFrontDoor: false });
-  }
-  if (ecommerce) {
-    add({ key: "order", name: "Order status", job: "Looks up an order by ID or phone and says where it is, leading with the status and then the date. Says so plainly if it is late. Never invents a status.", intent: "order_status", direction: "inbound", handsOffTo: ["complaints"], isFrontDoor: false });
-    add({ key: "delivery", name: "Delivery reschedule", job: "Calls when a delivery failed and finds a slot that works. Offers two windows, confirms the address, reads the slot back.", intent: "delivery_reschedule", direction: "outbound", handsOffTo: [], isFrontDoor: false });
-    if (has("cod", "cash on delivery", "payment")) {
-      add({ key: "cod", name: "COD payment reminder", job: "Reminds the customer of the amount due on delivery and when it arrives. Matter-of-fact, never pressuring. Takes cancellations without argument.", intent: "payment_reminder", direction: "outbound", handsOffTo: [], isFrontDoor: false });
-    }
-  }
-  if (care || ecommerce || civic || ctx.departments.length > 2) {
-    add({ key: "complaints", name: "Complaints & refunds", job: "Takes complaints and refund requests. Collects name, phone and what happened one at a time, registers the complaint, reads the reference number back, and says which team owns it. Acknowledges the feeling before acting.", intent: "complaint", direction: "inbound", handsOffTo: [], isFrontDoor: false });
-  }
-  if (sales) {
-    add({ key: "sales_in", name: "Sales enquiry", job: "Answers product and pricing questions from the knowledge base, qualifies the need, and books a demo or callback. Never invents a price or a discount.", intent: "sales_enquiry", direction: "inbound", handsOffTo: [], isFrontDoor: false });
-    add({ key: "lead", name: "Lead follow-up", job: "Follows up on enquiries the person submitted. Asks for two minutes, qualifies conversationally, books a specific next step. Ends warmly if not interested.", intent: "sales_enquiry", direction: "outbound", handsOffTo: [], isFrontDoor: false });
-  }
-  if (agents.length === 0) {
-    add({ key: "reception", name: "Reception", job: "Answers the main line, understands what the caller needs, answers from the knowledge base where it can, and takes a callback for anything else.", intent: "other", direction: "inbound", handsOffTo: [], isFrontDoor: false });
-  }
-
-  const inbound = agents.filter((a) => a.direction !== "outbound");
-  if (inbound.length >= 2) {
-    agents.unshift({
-      key: "front_door",
-      name: "Front door",
-      job: "Answers the main number, greets, works out in one or two turns what the caller needs and hands them to the right agent with a summary. Does not try to solve anything itself.",
-      intent: "other",
-      direction: "inbound",
-      handsOffTo: inbound.map((a) => a.key),
-      isFrontDoor: true,
-    });
-  }
-
-  const questions: string[] = [];
-  if (ctx.transfers.length === 0 && ctx.playbook.extra.humanEscalation !== false) questions.push("Is there a person a call can be transferred to when the agent is stuck? Name and number.");
-  if ((clinic || ctx.appointmentTypes.length === 0) && agents.some((a) => a.intent === "booking") && ctx.appointmentTypes.length === 0) questions.push("What can be booked — type, duration and hours?");
-  if (ctx.knowledgeDocs === 0) questions.push("What policies must the agent quote exactly — returns, refunds, fees, timings?");
-
-  return {
-    source: "heuristic",
-    summary: `${agents.length} agent${agents.length === 1 ? "" : "s"} covering ${Array.from(new Set(agents.map((a) => a.intent))).join(", ")}${inbound.length >= 2 ? ", with a front door that routes callers" : ""}.`,
-    questions,
-    agents,
-  };
-}
-
 /* ── Flow construction ────────────────────────────────────────────────────── */
 
 let seq = 0;
@@ -276,8 +247,8 @@ function edge(from: FlowNode, to: FlowNode, label?: string, tone: FlowEdge["tone
 
 /**
  * Builds a runnable graph for one planned agent. Every graph ends in an End,
- * a Transfer or a Handoff; escalation is present only when a desk exists (or
- * the owner has not ruled humans out), and bookings only when there is a type.
+ * a callback. A transfer node is added only when a desk exists and the owner
+ * has not ruled humans out. Bookings only when there is a type.
  */
 function buildFlow(
   spec: Shape["agents"][number],
@@ -287,8 +258,8 @@ function buildFlow(
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
   const needs = new Set<string>();
-  const canTransfer = ctx.playbook.extra.humanEscalation !== false;
-  const desk = ctx.transfers[0]?.name;
+  const canTransfer = ctx.playbook.extra.humanEscalation !== false && ctx.transfers.length > 0;
+  const desk = canTransfer ? ctx.transfers[0]?.name : undefined;
   const handoffs = spec.handsOffTo.map((k) => ({ key: k, name: handoffKeysToNames.get(k) ?? k }));
 
   const start = node("start", spec.direction === "outbound" ? "Introduce + ask for two minutes" : "Greet", 40, 40, {
@@ -297,10 +268,22 @@ function buildFlow(
   nodes.push(start);
 
   const end = node("end", "Close and hang up", 820, 260, { hangUp: true, script: "" });
-  const escalate = canTransfer
+  const human = canTransfer
     ? node("escalate", desk ? `Transfer to ${desk}` : "Transfer to human", 820, 60, desk ? { transferTarget: desk } : {})
-    : null;
-  if (escalate) needs.add("transfers");
+    : node("collect", "No human available — take a callback", 820, 60, {
+        fields: ["name, if you do not have it", "confirm the number they are calling from is fine for a callback"],
+        note: "Say plainly that nobody is free to take the call. Do not offer a transfer or name a person.",
+      });
+  let humanAdded = false;
+  const attachHuman = (from: FlowNode, label: string) => {
+    if (!humanAdded) {
+      nodes.push(human);
+      if (!canTransfer) edges.push(edge(human, end));
+      if (canTransfer) needs.add("transfers");
+      humanAdded = true;
+    }
+    edges.push(edge(from, human, label, canTransfer ? "danger" : "default"));
+  };
 
   if (spec.isFrontDoor) {
     const intent = node("intent", "What does the caller need?", 300, 40, {
@@ -313,41 +296,42 @@ function buildFlow(
       nodes.push(ho);
       edges.push(edge(intent, ho, h.name.toLowerCase()));
     });
-    const fallback = node("collect", "Take a callback", 560, 40 + handoffs.length * 110, { fields: ["name", "phone", "what it is about"] });
+    const fallback = node("collect", "Take a callback", 560, 40 + handoffs.length * 110, { fields: ["what it is about", "name", "confirm the number they are calling from"] });
     nodes.push(fallback, end);
     edges.push(edge(intent, fallback, "anything else"), edge(fallback, end));
-    if (escalate) {
-      nodes.push(escalate);
-      edges.push(edge(intent, escalate, "asks for a person", "danger"));
-    }
+    attachHuman(intent, "asks for a person");
     return { nodes, edges, needs: [...needs] };
   }
 
   switch (spec.intent) {
     case "order_status": {
       needs.add("orders");
-      const collect = node("collect", "Order ID or phone", 300, 40, { fields: ["order ID or registered phone"] });
+      const collect = node("collect", "Order ID, or use their number", 300, 40, {
+        fields: ["order ID — or the phone number they are calling from, without asking for it"],
+      });
       const pull = node("data_pull", "Look up the order", 300, 200, { tool: "lookup_order" });
       const branch = node("branch", "Found / late / dispute", 560, 200);
       const say = node("say", "Status, then the date", 820, 160, { script: "" });
       nodes.push(collect, pull, branch, say, end);
       edges.push(edge(start, collect), edge(collect, pull), edge(pull, branch), edge(branch, say, "found", "success"), edge(say, end));
-      const notFound = node("collect", "Take callback for missing order", 560, 340, { fields: ["name", "phone"] });
+      const notFound = node("collect", "Take callback for missing order", 560, 340, { fields: ["name", "confirm the number to call back on"] });
       nodes.push(notFound);
       edges.push(edge(branch, notFound, "not found"), edge(notFound, end));
-      if (escalate) { nodes.push(escalate); edges.push(edge(branch, escalate, "payment dispute", "danger")); }
+      attachHuman(branch, "payment dispute");
       break;
     }
     case "complaint": {
       needs.add("departments");
       const intent = node("intent", "Complaint, refund, or enquiry", 300, 40);
-      const collect = node("collect", "Name, phone, what happened", 300, 200, { fields: ["name", "phone", "what happened", "when"] });
+      const collect = node("collect", "Hear what happened, then name", 300, 200, {
+        fields: ["what happened and when — let them tell it fully", "name, only once you are ready to file", "confirm the number they are calling from"],
+      });
       const reg = node("data_pull", "Register the complaint", 560, 200, { tool: "register_complaint" });
       const say = node("say", "Read reference number back", 820, 200, { script: "" });
       const kb = node("data_pull", "Check the policy", 560, 40, { tool: "search_knowledge" });
       nodes.push(intent, collect, reg, say, kb, end);
       edges.push(edge(start, intent), edge(intent, collect, "complaint / refund"), edge(collect, reg), edge(reg, say, undefined, "success"), edge(say, end), edge(intent, kb, "policy question"), edge(kb, end));
-      if (escalate) { nodes.push(escalate); edges.push(edge(intent, escalate, "emergency / very angry", "danger")); }
+      attachHuman(intent, "emergency / very angry");
       needs.add("knowledge");
       break;
     }
@@ -361,12 +345,12 @@ function buildFlow(
         edges.push(edge(start, confirm), edge(confirm, book, "reschedule"), edge(confirm, note, "confirmed", "success"), edge(book, end), edge(note, end), edge(confirm, end, "cancel"));
       } else {
         const intent = node("intent", "New / reschedule / cancel", 300, 40);
-        const collect = node("collect", "Name, phone, preferred day", 300, 200, { fields: ["name", "phone", "preferred day"] });
+        const collect = node("collect", "What for, when, then name", 300, 200, { fields: ["what they want booked", "roughly when suits them", "name, just before booking"] });
         const book = node("book", "Offer two slots, confirm", 560, 200, { appointmentType: ctx.appointmentTypes[0]?.name });
         const kb = node("data_pull", "Fees, timings, directions", 560, 40, { tool: "search_knowledge" });
         nodes.push(intent, collect, book, kb, end);
         edges.push(edge(start, intent), edge(intent, collect, "book / reschedule"), edge(collect, book), edge(book, end, undefined, "success"), edge(intent, kb, "question"), edge(kb, end));
-        if (escalate) { nodes.push(escalate); edges.push(edge(intent, escalate, "medical urgency", "danger")); }
+        attachHuman(intent, "medical urgency");
       }
       break;
     }
@@ -382,7 +366,10 @@ function buildFlow(
     }
     case "sales_enquiry": {
       needs.add("knowledge");
-      const qualify = node("collect", "What they need, scale, timeline", 300, 40, { fields: ["what they are trying to solve", "scale", "timeline", "who decides"] });
+      const qualify = node("collect", "Listen: what they need, scale, timeline", 300, 40, {
+        fields: ["what they are trying to get done", "what they use today", "scale", "timeline", "who decides"],
+        note: "This is a conversation, not a questionnaire — one question, listen, respond to what they said, then the next only if it matters.",
+      });
       const kb = node("data_pull", "Answer from knowledge", 300, 200, { tool: "search_knowledge" });
       const next = ctx.appointmentTypes.length
         ? node("book", "Book a demo / callback", 560, 120, { appointmentType: ctx.appointmentTypes.find((a) => /demo|call/i.test(a.name))?.name })
@@ -403,11 +390,11 @@ function buildFlow(
     default: {
       const intent = node("intent", "What does the caller need?", 300, 40);
       const kb = node("data_pull", "Search knowledge", 560, 40, { tool: "search_knowledge" });
-      const cb = node("collect", "Take a callback", 560, 200, { fields: ["name", "phone", "what it is about"] });
+      const cb = node("collect", "Take a callback", 560, 200, { fields: ["what it is about", "name", "confirm the number they are calling from"] });
       nodes.push(intent, kb, cb, end);
       edges.push(edge(start, intent), edge(intent, kb, "question"), edge(kb, end), edge(intent, cb, "needs a person"), edge(cb, end));
       needs.add("knowledge");
-      if (escalate) { nodes.push(escalate); edges.push(edge(intent, escalate, "asks for a person", "danger")); }
+      attachHuman(intent, "asks for a person");
     }
   }
 
@@ -423,10 +410,34 @@ function buildFlow(
   return { nodes, edges, needs: [...needs] };
 }
 
+function ownerSaidNoHumans(text: string) {
+  return /\b(no human agents?|no humans?|no staff|nobody(?: is| to)?(?: available| there)?|no one(?: is)? available|without (?:a )?human|don'?t have (?:any )?(?:human|staff|agents?)|do not have (?:any )?(?:human|staff)|currently no (?:human|staff|agents?)|there are (?:currently )?no (?:human|staff|agents?))\b/i.test(text);
+}
+
 function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
   const names = new Map(shape.agents.map((a) => [a.key, a.name]));
+  const canTransfer = ctx.playbook.extra.humanEscalation !== false && ctx.transfers.length > 0;
+  const canBook = ctx.appointmentTypes.length > 0;
+  const usedNames = new Set<string>();
   return shape.agents.map((a) => {
     const flow = buildFlow(a, ctx, names);
+    const tools = toolsForRole({
+      intent: a.intent,
+      isFrontDoor: a.isFrontDoor,
+      canTransfer,
+      canHandoff: a.handsOffTo.length > 0,
+      canBook,
+    });
+    const knowledge = (a.knowledge ?? "").trim();
+    // An owner-given name ("Aarav") decides the voice's gender when the model
+    // did not pick a voice; otherwise the voice decides the name's gender.
+    const givenName = (a.personaName ?? "").trim() || (/^[A-Z][a-z]{2,}$/.test(a.name.trim()) ? a.name.trim() : "");
+    const chosenVoice = VOICE_CATALOG.find((v) => v.name === a.voice);
+    const voice =
+      chosenVoice && (!guessGender(givenName) || chosenVoice.gender === guessGender(givenName))
+        ? chosenVoice.name
+        : defaultVoiceFor(a.intent, a.isFrontDoor, guessGender(givenName));
+    const personaName = pickPersonaName(a.personaName, a.name, voice, usedNames);
     return {
       key: a.key,
       name: a.name,
@@ -438,9 +449,37 @@ function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
       needs: flow.needs,
       nodes: flow.nodes,
       edges: flow.edges,
-      prompt: a.job,
+      tools,
+      knowledge,
+      personaName,
+      voice,
+      prompt: buildRolePrompt({
+        name: a.name,
+        job: a.job,
+        role: a.role,
+        intent: a.intent,
+        isFrontDoor: a.isFrontDoor,
+        direction: a.direction,
+        canTransfer,
+        tools,
+      }),
     };
   });
+}
+
+/**
+ * The model's pick, unless it is empty or a repeat; an agent named after a
+ * person keeps that name; otherwise the next unused first name for the
+ * voice's gender.
+ */
+function pickPersonaName(proposed: string | undefined, agentName: string, voice: string, used: Set<string>) {
+  const gender = VOICE_CATALOG.find((v) => v.name === voice)?.gender ?? "neutral";
+  const clean = (proposed ?? "").trim().split(/\s+/)[0]?.replace(/[^A-Za-z]/g, "") ?? "";
+  const fromAgent = /^[A-Z][a-z]{2,}$/.test(agentName.trim()) ? agentName.trim() : "";
+  const candidates = [clean, fromAgent, ...FIRST_NAMES[gender], ...FIRST_NAMES.neutral].filter(Boolean);
+  const pick = candidates.find((n) => !used.has(n.toLowerCase())) ?? clean ?? "Riya";
+  used.add(pick.toLowerCase());
+  return pick;
 }
 
 /* ── Apply ────────────────────────────────────────────────────────────────── */
@@ -449,7 +488,7 @@ function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
  * Creates the agents. Two passes: handoff nodes reference sibling agents by
  * plan key, and the sibling's id does not exist until it is inserted.
  */
-export function applyPlan(orgId: string, plan: Pick<AgentPlan, "agents">) {
+export async function applyPlan(orgId: string, plan: Pick<AgentPlan, "agents">) {
   const ids = new Map<string, string>();
   for (const a of plan.agents) {
     const id = createAgent(orgId, {
@@ -457,10 +496,25 @@ export function applyPlan(orgId: string, plan: Pick<AgentPlan, "agents">) {
       intent: a.intent,
       direction: a.direction,
       prompt: a.prompt,
+      tools: a.tools,
+      voice: a.voice || undefined,
+      personaName: a.personaName || undefined,
+      languages: [...AGENT_LANGUAGES],
       nodes: [],
       edges: [],
     });
     ids.set(a.key, id);
+    // Only real facts the owner gave. A filler "this agent does X" note is
+    // worse than nothing: search_knowledge returns it for every query and
+    // the agent reads it out instead of saying it does not know.
+    const knowledge = (a.knowledge ?? "").trim();
+    if (knowledge.length >= 20) {
+      try {
+        await ingestKnowledgeDoc(orgId, `${a.name} — what this agent may say`, "text", knowledge, id);
+      } catch (error) {
+        console.error(`[planner] knowledge for ${a.name} failed:`, String(error).slice(0, 200));
+      }
+    }
   }
   for (const a of plan.agents) {
     const nodes = a.nodes.map((n) => {

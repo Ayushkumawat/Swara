@@ -1,6 +1,7 @@
 import "server-only";
 import { GoogleGenAI, Type } from "@google/genai";
 import { getDb, uid } from "./db";
+import { TEXT_MODELS } from "./models";
 
 /**
  * The non-live AI: post-call analysis and knowledge embeddings.
@@ -12,13 +13,6 @@ import { getDb, uid } from "./db";
  * routed complaint is recoverable in a way a dropped one is not.
  */
 
-/** Primary and backup, tried in order. The `-latest` alias returns 503 under
- *  load spikes often enough that a second, pinned model is worth one more
- *  attempt before the keyword fallback takes over. */
-const TEXT_MODELS = [
-  process.env.GEMINI_TEXT_MODEL ?? "gemini-flash-latest",
-  "gemini-3.6-flash",
-];
 const EMBED_MODEL = process.env.GEMINI_EMBED_MODEL ?? "gemini-embedding-001";
 
 function client(): GoogleGenAI | null {
@@ -208,6 +202,7 @@ export async function ingestKnowledgeDoc(
   name: string,
   kind: "pdf" | "url" | "csv" | "text",
   text: string,
+  agentId?: string | null,
 ): Promise<{ id: string; chunks: number }> {
   const db = getDb();
   const { uid, nowIso } = await import("./db");
@@ -232,8 +227,8 @@ export async function ingestKnowledgeDoc(
   const docId = uid("doc");
   const sizeKb = Math.max(1, Math.round(Buffer.byteLength(text, "utf8") / 1024));
   db.prepare(
-    "INSERT INTO knowledge_docs (id, org_id, name, kind, size_label, status, updated_at) VALUES (?, ?, ?, ?, ?, 'indexed', ?)",
-  ).run(docId, orgId, name, kind, `${sizeKb} KB`, nowIso());
+    "INSERT INTO knowledge_docs (id, org_id, name, kind, size_label, status, updated_at, agent_id) VALUES (?, ?, ?, ?, ?, 'indexed', ?, ?)",
+  ).run(docId, orgId, name, kind, `${sizeKb} KB`, nowIso(), agentId ?? null);
 
   const insert = db.prepare(
     "INSERT INTO knowledge_chunks (doc_id, seq, content, embedding) VALUES (?, ?, ?, ?)",
@@ -251,14 +246,19 @@ export async function ingestKnowledgeDoc(
  * similarity when vectors exist, term overlap otherwise — an agent that says
  * "I can't find that" beats one whose tool errors mid-call.
  */
-export async function searchKnowledge(orgId: string, query: string, limit = 4) {
+export async function searchKnowledge(orgId: string, query: string, limit = 4, agentId?: string | null) {
   const db = getDb();
+  // This agent's own notes plus anything filed for the whole business.
+  // Never another agent's notes — a refunds policy must not leak into sales.
   const chunks = db
     .prepare(
-      `SELECT c.id, c.content, c.embedding, k.name doc FROM knowledge_chunks c
-       JOIN knowledge_docs k ON k.id=c.doc_id WHERE k.org_id=?`,
+      agentId
+        ? `SELECT c.id, c.content, c.embedding, k.name doc FROM knowledge_chunks c
+           JOIN knowledge_docs k ON k.id=c.doc_id WHERE k.org_id=? AND (k.agent_id=? OR k.agent_id IS NULL)`
+        : `SELECT c.id, c.content, c.embedding, k.name doc FROM knowledge_chunks c
+           JOIN knowledge_docs k ON k.id=c.doc_id WHERE k.org_id=? AND k.agent_id IS NULL`,
     )
-    .all(orgId) as { id: number; content: string; embedding: Buffer | null; doc: string }[];
+    .all(...(agentId ? [orgId, agentId] : [orgId])) as { id: number; content: string; embedding: Buffer | null; doc: string }[];
   if (chunks.length === 0) return [];
 
   const withVectors = chunks.filter((c) => c.embedding);

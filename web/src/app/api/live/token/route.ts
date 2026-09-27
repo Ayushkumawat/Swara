@@ -97,6 +97,7 @@ export async function POST(request: Request) {
             systemInstruction,
             voice: voiceName,
             resumeHandle,
+            toolNames: prompt.setupTools ? undefined : prompt.tools,
             extraTools: prompt.setupTools ? SETUP_TOOL_DECLARATIONS : [],
           }),
         },

@@ -133,12 +133,16 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "register_complaint",
     description:
-      "Register a formal complaint. Call this once you have the caller's name, phone and the issue — the returned reference number is what you read back. Never promise a reference number without calling this first.",
+      "File a ticket for the caller's problem. You have NO reference number and nothing is registered until this returns registered:true — never say 'noted', 'registered' or any number before that. If it returns possible_duplicate, the caller already has an open ticket for something similar: read them its status, ask if this is the same issue, and call again with confirm_new:true only if they say it is different.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         customer_name: { type: Type.STRING },
-        phone: { type: Type.STRING },
+        phone: { type: Type.STRING, description: "Leave empty to use the number they are calling from. Never send a masked or made-up number." },
+        confirm_new: {
+          type: Type.BOOLEAN,
+          description: "true only after the caller confirmed this is a different issue from their existing open ticket",
+        },
         title: { type: Type.STRING, description: "One line, in English, e.g. 'AC not working in coach 3'" },
         description: { type: Type.STRING, description: "What happened, where, when — in English" },
         category: {
@@ -159,13 +163,13 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "lookup_ticket",
     description:
-      "Look up an existing ticket (enquiry, complaint or grievance) by reference number and the name it was registered under. Call this whenever a caller asks for status or quotes a number like #48213.",
+      "Look up the caller's tickets (enquiry, complaint or grievance). Call this whenever they ask for status, quote a number like #48213, or say they already complained. With no arguments it finds every ticket filed from the number they are calling on — so you never need to ask for a reference number first.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        reference_number: { type: Type.STRING, description: "The ticket number, with or without #" },
-        customer_name: { type: Type.STRING, description: "Name the ticket was registered with" },
-        phone: { type: Type.STRING, description: "Registered mobile, if they do not have the number" },
+        reference_number: { type: Type.STRING, description: "The ticket number, with or without #, if they gave one" },
+        customer_name: { type: Type.STRING, description: "Name the ticket was registered with, if they gave one" },
+        phone: { type: Type.STRING, description: "Only if they are asking about a ticket filed from a different phone. Never send a masked number." },
       },
     },
   },
@@ -258,7 +262,7 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "end_call",
     description:
-      "Hang up. Call this ONLY after you have said your closing line and the caller has nothing more. Never call it mid-task.",
+      "Hang up. Call this ONLY after the caller has answered 'no' to 'anything else?' AND you have said your closing line. Never in the same turn as the 'anything else?' question — the caller has not answered yet. Never call it mid-task.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -349,12 +353,13 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: "add_knowledge",
-    description: "Save a policy, price list, FAQ or process the agents must quote from instead of guessing. Write it out fully in `text`.",
+    description: "Save a policy, price list, FAQ or process one agent must quote from instead of guessing. Write it out fully in `text`, and set agent_name so only that agent searches it.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING },
         text: { type: Type.STRING, description: "At least a paragraph, in the business's own terms" },
+        agent_name: { type: Type.STRING, description: "Which agent may quote this. Omit only for a fact every agent shares." },
       },
       required: ["name", "text"],
     },
@@ -381,6 +386,8 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
               direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
               hands_off_to: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Names of other agents in this plan" },
               is_front_door: { type: Type.BOOLEAN, description: "Answers the main number and routes" },
+              persona_name: { type: Type.STRING, description: "The first name this agent uses on the call, if the owner chose one" },
+              voice: { type: Type.STRING, description: "Orus (male, warm), Kore (female, crisp), Puck (male, bright), Charon (male, calm), Aoede (female, soft) — if the owner has a preference" },
             },
             required: ["name", "job", "intent", "direction"],
           },
@@ -396,6 +403,8 @@ export type LiveSessionOptions = {
   voice?: string;
   /** Extra tools for this session (the setup assistant's writers). */
   extraTools?: FunctionDeclaration[];
+  /** When set, only these call tools are offered. Setup tools are still appended. */
+  toolNames?: string[];
   /**
    * Handle from a previous connection's `sessionResumptionUpdate`. Passing it
    * makes the server restore that conversation's context instead of starting
@@ -424,7 +433,11 @@ export function buildLiveConfig({
   voice = DEFAULT_VOICE,
   resumeHandle,
   extraTools = [],
+  toolNames,
 }: LiveSessionOptions): LiveConnectConfig {
+  const callTools = toolNames
+    ? TOOL_DECLARATIONS.filter((t) => t.name != null && toolNames.includes(t.name))
+    : TOOL_DECLARATIONS;
   return {
     responseModalities: [Modality.AUDIO],
     speechConfig: {
@@ -437,7 +450,7 @@ export function buildLiveConfig({
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: VAD_CONFIG },
-    tools: [{ functionDeclarations: [...TOOL_DECLARATIONS, ...extraTools] }],
+    tools: [{ functionDeclarations: [...callTools, ...extraTools] }],
     contextWindowCompression: COMPRESSION_CONFIG,
     thinkingConfig: THINKING_CONFIG,
     // Always on. An empty object is the "enabled" signal, which asks the
@@ -457,10 +470,8 @@ export function languageDirective() {
   // Language is detected from the caller's speech. Asking "Hindi or English?"
   // is a hold-menu behaviour and the thing Indian callers hang up on.
   return [
-    "\n\nLANGUAGE",
-    "Never ask which language they prefer. Detect it from the first words you hear and answer in that language — Hindi, English, Hinglish, Tamil, Telugu, Kannada, Malayalam, Marathi, Bengali, Gujarati, Punjabi or Odia.",
-    "If they switch mid-sentence, switch with them in the same turn. Match script and register: Hinglish stays Hinglish, not formal Hindi.",
-    "Never announce that you are switching. Just switch.",
-    "Your opening line may be bilingual (Namaste / hello) so either kind of caller feels addressed; after that, follow them.",
+    "\n\nLANGUAGE — this overrides whatever language you opened in.",
+    "From the caller's first words, answer in the language they are using. If they switch mid-call — Hindi, English, Hinglish, Tamil, Telugu, Kannada, Malayalam, Marathi, Bengali, Gujarati, Punjabi or Odia — switch in that same turn.",
+    "Do not keep a house language. Do not ask which language they prefer. Do not announce that you switched. Match their register: Hinglish stays Hinglish.",
   ].join(" ");
 }

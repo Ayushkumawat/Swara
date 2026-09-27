@@ -107,11 +107,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     if (!agentId) agentId = firstLiveAgent(orgId);
     if (!agentId) return json({ error: "No agent is assigned to this number and the workspace has no agents." }, 404);
 
+    let callId = p.callId ?? null;
+    // The bridge does not resend the caller's number on a mid-call handoff;
+    // the call row has it. Without it the second agent loses the CALLER
+    // block — who they are and which tickets they already have open.
+    let fromNumber = p.direction === "inbound" ? p.from : undefined;
+    if (!fromNumber && callId && p.handoff) {
+      const row = getDb().prepare("SELECT phone, direction FROM calls WHERE id=? AND org_id=?").get(callId, orgId) as
+        | { phone: string | null; direction: string }
+        | undefined;
+      if (row?.phone && row.phone !== "unknown") fromNumber = row.phone;
+    }
     const prompt = composeLivePrompt(orgId, agentId, undefined, {
-      fromNumber: p.direction === "inbound" ? p.from : undefined,
+      fromNumber,
       briefing: p.briefing,
     });
-    let callId = p.callId ?? null;
     if (callId && p.handoff) {
       reassignCall(orgId, callId, agentId, prompt.name);
     } else if (!callId) {
@@ -142,8 +152,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
       apiVersion: LIVE_API_VERSION,
       systemInstruction: prompt.systemInstruction,
       voice: prompt.voice,
-      // Plain JSON declarations; the bridge validates them into SDK types.
-      tools: TOOL_DECLARATIONS,
+      tools: TOOL_DECLARATIONS.filter((t) => t.name != null && prompt.tools.includes(t.name)),
     });
   }
 

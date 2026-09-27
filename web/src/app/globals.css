@@ -87,6 +87,16 @@
   }
 }
 
+/* Marketing marquee strip — the track is duplicated once, so -50% loops seamlessly */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
 /* Live waveform bars — staggered via --i on each bar */
 @keyframes wavebar {
   0%,

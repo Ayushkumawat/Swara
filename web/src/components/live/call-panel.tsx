@@ -31,6 +31,10 @@ export type CallPanelProps = {
   languages?: string[];
   /** Pin the voice (Swara). Hides the voice picker. */
   fixedVoice?: string;
+  /** The voice saved on the agent — preselected so the test sounds like the real call. */
+  initialVoice?: string;
+  /** Save the picked voice onto the agent. Shows a "use this voice" action. */
+  onUseVoice?: (voice: string) => Promise<void> | void;
   /** What to show above the Start button when idle. */
   intro?: React.ReactNode;
   startLabel?: string;
@@ -98,13 +102,29 @@ function CallPanelBody({
   agentName,
   languages,
   fixedVoice,
+  initialVoice,
+  onUseVoice,
   intro,
   startLabel,
   handlers,
 }: CallPanelProps & { open: boolean }) {
   const live = useLiveSession(handlers);
-  const [voice, setVoice] = useState(fixedVoice ?? LIVE_VOICES[0].name);
+  const [voice, setVoice] = useState(
+    fixedVoice ?? LIVE_VOICES.find((v) => v.name === initialVoice)?.name ?? LIVE_VOICES[0].name,
+  );
   const [draft, setDraft] = useState("");
+  const [savingVoice, setSavingVoice] = useState(false);
+  const savedVoice = initialVoice && LIVE_VOICES.some((v) => v.name === initialVoice) ? initialVoice : undefined;
+
+  const saveVoice = async () => {
+    if (!onUseVoice) return;
+    setSavingVoice(true);
+    try {
+      await onUseVoice(voice);
+    } finally {
+      setSavingVoice(false);
+    }
+  };
 
   // Ending the call when the panel closes, rather than on unmount only, so
   // dismissing the dialog releases the microphone immediately.
@@ -121,7 +141,20 @@ function CallPanelBody({
         {idle ? (
           <>
             {intro}
-            {fixedVoice ? null : <Setup voice={voice} onVoice={setVoice} />}
+            {fixedVoice ? null : <Setup voice={voice} onVoice={setVoice} savedVoice={savedVoice} />}
+            {!fixedVoice && onUseVoice ? (
+              <div className="mt-3 flex items-center justify-between gap-3 rounded-[12px] border border-hairline bg-white/[0.03] px-3 py-2">
+                <p className="text-[11.5px] leading-snug text-t3">
+                  {savedVoice === voice
+                    ? `${agentName} speaks with ${voice} on real calls.`
+                    : `Try a voice here, then make it ${agentName}'s voice on real calls.`}
+                </p>
+                <Button size="sm" variant="subtle" onClick={() => void saveVoice()} disabled={savingVoice || savedVoice === voice}>
+                  {savingVoice ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
+                  {savedVoice === voice ? "In use" : "Use this voice"}
+                </Button>
+              </div>
+            ) : null}
             {live.endedOutcome ? (
               <div className="mt-3 flex items-center gap-2 rounded-[12px] border border-cyan/25 bg-cyan/[0.06] px-3 py-2 text-[11.5px] text-t2">
                 <Check className="size-3.5 text-cyan" />
@@ -190,7 +223,7 @@ function CallPanelBody({
   );
 }
 
-function Setup({ voice, onVoice }: { voice: string; onVoice: (v: string) => void }) {
+function Setup({ voice, onVoice, savedVoice }: { voice: string; onVoice: (v: string) => void; savedVoice?: string }) {
   return (
     <div>
       <div className="mb-2 text-[11.5px] font-medium text-t2">Voice</div>
@@ -206,7 +239,10 @@ function Setup({ voice, onVoice }: { voice: string; onVoice: (v: string) => void
                 : "border-hairline bg-white/[0.035] hover:bg-white/[0.06]",
             )}
           >
-            <div className="text-[12.5px] font-medium text-t1">{v.label}</div>
+            <div className="flex items-center justify-between gap-2 text-[12.5px] font-medium text-t1">
+              <span>{v.label}</span>
+              {savedVoice === v.name ? <Pill tone="cyan">saved</Pill> : null}
+            </div>
             <div className="mt-0.5 text-[10.5px] text-t3">
               {v.gender} · {v.style} · {v.blurb}
             </div>
@@ -214,8 +250,8 @@ function Setup({ voice, onVoice }: { voice: string; onVoice: (v: string) => void
         ))}
       </div>
       <p className="mt-3 text-[11px] leading-relaxed text-t3">
-        It never asks which language you prefer. Speak Hindi, English or Hinglish — it
-        follows you. Each voice has a gendered talking style you can edit in Voice studio.
+        It never asks which language you prefer. Speak Hindi, English or Hinglish — it follows you. The agent
+        introduces itself by its own name in whichever voice you pick.
       </p>
     </div>
   );

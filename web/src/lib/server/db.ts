@@ -577,6 +577,9 @@ function migrateColumns(database: Database.Database) {
   // v4: Google sign-in. SQLite cannot ADD COLUMN ... UNIQUE, so the index is separate.
   addColumn(database, "users", "google_sub", "TEXT");
   addColumn(database, "users", "avatar_url", "TEXT");
+  addColumn(database, "knowledge_docs", "agent_id", "TEXT");
+  addColumn(database, "agents", "tools", "TEXT");
+  addColumn(database, "agents", "persona_name", "TEXT");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub)");
 }
 

@@ -25,7 +25,7 @@ import {
 import { CallDuration, Waveform } from "@/components/ui/live";
 import { ListRow } from "@/components/ui/table";
 import { LazyMount, NumberTicker, Reveal, Stagger, StaggerItem } from "@/components/motion/primitives";
-import { useLiveCalls, useOverview, useUsage } from "@/lib/api/hooks";
+import { useLiveCalls, useMe, useOverview, useUsage } from "@/lib/api/hooks";
 import { INTENT_LABEL, LANGUAGE_LABEL } from "@/lib/api/schemas";
 import { formatRupees, maskPhone } from "@/lib/utils";
 
@@ -42,14 +42,16 @@ export default function OverviewPage() {
   const overview = useOverview();
   const live = useLiveCalls();
   const usage = useUsage();
+  const me = useMe();
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const firstName = me.data?.user.name.trim().split(/\s+/)[0];
 
   return (
     <>
       <PageHead
-        title={`${greeting}, Rohan`}
+        title={firstName ? `${greeting}, ${firstName}` : greeting}
         sub={`Here's how your agents are performing today, ${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`}
         actions={
           <>
@@ -81,7 +83,9 @@ export default function OverviewPage() {
                 accent="violet"
                 value={<NumberTicker value={d.callsToday} />}
                 label="Calls handled today"
-                trend={`+${Math.round(d.callsTodayDelta * 100)}%`}
+                trend={`${d.callsTodayDelta >= 0 ? "+" : ""}${Math.round(d.callsTodayDelta * 100)}%`}
+                trendTone={d.callsTodayDelta < 0 ? "down" : d.callsTodayDelta === 0 ? "flat" : "up"}
+                footnote={d.activeCalls > 0 ? `${d.activeCalls} on a call right now` : "vs. yesterday"}
                 onClick={() => router.push("/analytics")}
               />
             </StaggerItem>
@@ -91,11 +95,12 @@ export default function OverviewPage() {
                 accent="cyan"
                 value={<NumberTicker value={d.minutesUsed} />}
                 label="Minutes used this cycle"
-                trend={`+${Math.round(d.minutesDelta * 100)}%`}
+                trend={`${d.minutesDelta >= 0 ? "+" : ""}${Math.round(d.minutesDelta * 100)}%`}
+                trendTone={d.minutesDelta < 0 ? "down" : d.minutesDelta === 0 ? "flat" : "up"}
                 footnote={
-                  usage.data
+                  usage.data && usage.data.includedMinutes > 0
                     ? `${Math.round((usage.data.usedMinutes / usage.data.includedMinutes) * 100)}% of ${usage.data.includedMinutes.toLocaleString("en-IN")} included`
-                    : undefined
+                    : "week over week"
                 }
                 onClick={() => router.push("/settings")}
               />
@@ -106,7 +111,9 @@ export default function OverviewPage() {
                 accent="amber"
                 value={<NumberTicker value={d.resolutionRate * 100} decimals={1} suffix="%" />}
                 label="Resolution rate"
-                trend={`+${(d.resolutionDelta * 100).toFixed(1)}%`}
+                trend={`${d.resolutionDelta >= 0 ? "+" : ""}${(d.resolutionDelta * 100).toFixed(1)}%`}
+                trendTone={d.resolutionDelta < 0 ? "down" : d.resolutionDelta === 0 ? "flat" : "up"}
+                footnote="closed by the agent, last 7 days"
                 onClick={() => router.push("/analytics")}
               />
             </StaggerItem>
@@ -118,9 +125,15 @@ export default function OverviewPage() {
                 accent="coral"
                 value={<NumberTicker value={d.openComplaints} />}
                 label="Open complaints"
-                trend={`${d.complaintsDelta}`}
-                trendTone={d.complaintsDelta < 0 ? "up" : "down"}
-                footnote="1 past SLA — needs you today"
+                trend={`${d.complaintsDelta > 0 ? "+" : ""}${d.complaintsDelta} this week`}
+                trendTone={d.complaintsDelta < 0 ? "up" : d.complaintsDelta === 0 ? "flat" : "down"}
+                footnote={
+                  d.pastSla > 0
+                    ? `${d.pastSla} past SLA — needs you today`
+                    : d.openComplaints > 0
+                      ? "all within SLA"
+                      : "nothing open"
+                }
                 onClick={() => router.push("/complaints")}
               />
             </StaggerItem>
@@ -149,7 +162,7 @@ export default function OverviewPage() {
                     <Legend color="rgba(63,224,197,0.7)" label="Outbound" />
                     <span className="ml-auto flex items-center gap-1.5 text-[11.5px] text-cyan">
                       <TrendingUp className="size-3.5" />
-                      Busiest day was yesterday
+                      {busiestDayLabel(d.volume)}
                     </span>
                   </div>
                 </>
@@ -284,6 +297,17 @@ export default function OverviewPage() {
       </LazyMount>
     </>
   );
+}
+
+function busiestDayLabel(volume: { date: string; inbound: number; outbound: number }[]) {
+  const withCalls = volume.filter((v) => v.inbound + v.outbound > 0);
+  if (!withCalls.length) return "No calls yet this week";
+  const top = withCalls.reduce((a, b) => (b.inbound + b.outbound > a.inbound + a.outbound ? b : a));
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const when =
+    top.date === today ? "today" : top.date === yesterday ? "yesterday" : new Date(top.date).toLocaleDateString("en-IN", { weekday: "long" });
+  return `Busiest day was ${when} · ${top.inbound + top.outbound} calls`;
 }
 
 function Legend({ color, label }: { color: string; label: string }) {

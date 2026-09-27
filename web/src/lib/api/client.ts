@@ -4,6 +4,7 @@ import {
   ActionItemSchema,
   AgentPlanSchema,
   type AgentPlan,
+  SwaraChatResponseSchema,
   AgentSchema,
   AgentTemplateSchema,
   AgentVersionSchema,
@@ -262,6 +263,8 @@ export const mutations = {
     apiSend("DELETE", `/agents/${id}`, { ok: true }, z.object({ ok: z.boolean() })),
   planAgents: (body: { brief: string; answers?: Record<string, string> }) =>
     apiSend("POST", "/agents/plan", body, AgentPlanSchema),
+  swaraChat: (messages: { role: "user" | "model"; text: string }[]) =>
+    apiSend("POST", "/swara/chat", { messages }, SwaraChatResponseSchema),
   applyPlan: (plan: Pick<AgentPlan, "agents">) =>
     apiSend(
       "POST",
@@ -299,7 +302,7 @@ export const mutations = {
     apiSend("PATCH", `/campaigns/${id}`, { status }, z.object({ ok: z.boolean() })),
   addContacts: (campaignId: string, contacts: unknown) =>
     apiSend("POST", `/campaigns/${campaignId}/contacts`, { contacts }, z.object({ added: z.number() })),
-  addKnowledge: (body: { name: string; kind?: "pdf" | "url" | "csv" | "text"; text: string }) =>
+  addKnowledge: (body: { name: string; kind?: "pdf" | "url" | "csv" | "text"; text: string; agentId?: string }) =>
     apiSend("POST", "/agents/knowledge", body, z.object({ id: z.string(), chunks: z.number().optional() }).passthrough()),
   updateComplaint: (id: string, stage: "new" | "in_progress" | "escalated" | "resolved") =>
     apiSend("PATCH", `/complaints/${id}`, { stage }, z.object({ ok: z.boolean(), id: z.string(), stage: z.string() })),

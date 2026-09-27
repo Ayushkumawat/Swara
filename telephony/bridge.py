@@ -183,7 +183,21 @@ def _plivo() -> plivo.RestClient:
     return plivo.RestClient(auth_id=PLIVO_AUTH_ID, auth_token=PLIVO_AUTH_TOKEN)
 
 
-def _public_ws(path: str) -> str:
+def _request_public_base() -> str | None:
+    """Host Plivo just used. Prefer this over PUBLIC_URL so a stale ngrok
+    domain in .env cannot send the audio stream to a tunnel that is gone."""
+    host = (request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
+    if not host or host.startswith(("127.", "localhost", "0.0.0.0")):
+        return None
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme) or "https"
+    return f"{proto}://{host}"
+
+
+def _public_ws(path: str, *, prefer_request: bool = False) -> str:
+    if prefer_request:
+        base = _request_public_base()
+        if base:
+            return base.replace("https://", "wss://").replace("http://", "ws://") + path
     if PUBLIC_URL:
         return PUBLIC_URL.replace("https://", "wss://").replace("http://", "ws://") + path
     proto = "wss" if request.headers.get("X-Forwarded-Proto", request.scheme) == "https" else "ws"
@@ -233,7 +247,8 @@ async def answer() -> Response:
     CALLS[key] = call
     log(f"[{key}] answer {call.direction} from={call.from_number} to={call.to_number} uuid={call.plivo_uuid}")
 
-    ws_url = _public_ws(f"/media-stream/{key}")
+    ws_url = _public_ws(f"/media-stream/{key}", prefer_request=True)
+    log(f"[{key}] stream url {ws_url}")
     # Single-line Stream tag: Plivo's XML parser has rejected split attribute
     # lines as "Invalid Answer XML" (hangup 8011) in the past.
     xml = (

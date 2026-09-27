@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -13,12 +12,12 @@ import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
 import { Field, Select, Tabs, TextInput, Toggle } from "@/components/ui/controls";
-import { CardSkeleton, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
+import { QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
 import { SwaraOrb } from "@/components/agents/build-with-swara";
+import { SwaraChat } from "@/components/agents/swara-chat";
 import { IS_MOCK, mutations } from "@/lib/api/client";
-import { SWARA_AGENT_ID, SWARA_VOICE } from "@/lib/agents/swara";
 import { USE_CASES, type SetupArea } from "@/lib/agents/use-cases";
 import {
   qk,
@@ -33,10 +32,6 @@ import {
 } from "@/lib/api/hooks";
 import { UseCaseSchema, type AppointmentType, type Department, type Playbook, type TransferTarget, type UseCase } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
-
-const InlineCallPanel = dynamic(() => import("@/components/live/call-panel").then((m) => m.InlineCallPanel), {
-  loading: () => <CardSkeleton height={220} />,
-});
 
 type Tab = SetupArea;
 
@@ -107,26 +102,20 @@ export default function SetupPage() {
                     <div className="font-[family-name:var(--font-display)] text-[14.5px] font-semibold text-t1">Set up by talking</div>
                     <p className="mt-0.5 text-[11.5px] leading-relaxed text-t3">
                       Swara asks what you do, who handles what, who a call can reach, what can be booked — and saves
-                      each answer here as you speak. She raises the edge cases you have not thought of.
+                      each answer here as you type.
                     </p>
                   </div>
                 </div>
-                <InlineCallPanel
-                  agentId={SWARA_AGENT_ID}
-                  agentName="Swara"
-                  fixedVoice={SWARA_VOICE}
-                  startLabel="Start talking to Swara"
-                  handlers={{
-                    onToolResult: (name, result) => {
-                      refreshAll();
-                      if (typeof result.error !== "string") setLastSaved(name);
-                      if (name === "propose_agents") {
-                        toast("Swara proposed your agents", {
-                          description: "Open Agents & flows to review and create them.",
-                          action: { label: "Open", onClick: () => router.push("/agents") },
-                        });
-                      }
-                    },
+                <SwaraChat
+                  onSaved={(name) => {
+                    refreshAll();
+                    setLastSaved(name);
+                  }}
+                  onPlan={() => {
+                    toast("Swara proposed your agents", {
+                      description: "Open Agents & flows to review and create them. If planning failed, retry — nothing already saved was reset.",
+                      action: { label: "Open", onClick: () => router.push("/agents") },
+                    });
                   }}
                 />
                 <AnimatePresence>

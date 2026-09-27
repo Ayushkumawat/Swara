@@ -132,8 +132,13 @@ export const AgentSchema = z.object({
   intent: IntentSchema,
   direction: z.enum(["inbound", "outbound", "both"]),
   voiceId: z.string().optional(),
+  /** Live API voice name the agent speaks with ("Orus"). */
+  voice: z.string().optional(),
+  /** The name the agent introduces itself with on a call. */
+  personaName: z.string().optional(),
   mode: z.enum(["graph", "prompt"]),
   prompt: z.string().optional(),
+  tools: z.array(z.string()).optional(),
   nodes: z.array(FlowNodeSchema),
   edges: z.array(FlowEdgeSchema),
   version: z.number(),
@@ -161,6 +166,7 @@ export const KnowledgeDocSchema = z.object({
   chunks: z.number(),
   status: z.enum(["indexed", "indexing", "failed"]),
   updatedAt: z.string(),
+  agentId: z.string().nullable().optional(),
 });
 export type KnowledgeDoc = z.infer<typeof KnowledgeDocSchema>;
 
@@ -472,6 +478,14 @@ export const PlannedAgentSchema = z.object({
   nodes: z.array(FlowNodeSchema),
   edges: z.array(FlowEdgeSchema),
   prompt: z.string(),
+  /** Tools this agent is allowed to call. Empty means derive at apply time. */
+  tools: z.array(z.string()).default([]),
+  /** Facts ingested into this agent's own knowledge base on apply. */
+  knowledge: z.string().default(""),
+  /** First name the agent uses on the call. */
+  personaName: z.string().default(""),
+  /** Live API voice name ("Orus", "Kore"…). */
+  voice: z.string().default(""),
 });
 export type PlannedAgent = z.infer<typeof PlannedAgentSchema>;
 
@@ -486,6 +500,18 @@ export const AgentPlanSchema = z.object({
   source: z.enum(["gemini", "heuristic"]),
 });
 export type AgentPlan = z.infer<typeof AgentPlanSchema>;
+
+export const SwaraChatMessageSchema = z.object({
+  role: z.enum(["user", "model"]),
+  text: z.string(),
+});
+export const SwaraChatResponseSchema = z.object({
+  reply: z.string(),
+  tools: z.array(z.object({ name: z.string(), result: z.record(z.string(), z.unknown()) })),
+  plan: AgentPlanSchema.nullable(),
+  model: z.string(),
+});
+export type SwaraChatResponse = z.infer<typeof SwaraChatResponseSchema>;
 
 export const ConnectorRowSchema = z.object({
   id: z.string(),
@@ -653,6 +679,8 @@ export const OverviewSchema = z.object({
   resolutionDelta: z.number(),
   openComplaints: z.number(),
   complaintsDelta: z.number(),
+  /** Open tickets whose SLA clock has already run out. */
+  pastSla: z.number().default(0),
   activeCalls: z.number(),
   volume: z.array(
     z.object({ date: z.string(), inbound: z.number(), outbound: z.number() }),

@@ -25,7 +25,8 @@ import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { Tabs, TextInput, Field } from "@/components/ui/controls";
+import { Tabs, TextInput, Field, Select } from "@/components/ui/controls";
+import { LIVE_VOICES } from "@/lib/live/config";
 import { CardSkeleton, EmptyState, QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
@@ -33,7 +34,6 @@ import { Waveform } from "@/components/ui/live";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { AGENT_TEMPLATES, templateById } from "@/lib/agents/templates";
 import { compileFlow, NODE_KIND_LABEL, newNode, validateFlow } from "@/lib/agents/flow";
-import { SWARA_AGENT_ID } from "@/lib/agents/swara";
 import {
   qk,
   useAgentTemplates,
@@ -48,7 +48,9 @@ import { INTENT_LABEL, type Agent, type AgentPlan, type FlowEdge, type FlowNode 
 import { cn, initialsOf, relativeTime } from "@/lib/utils";
 import type { FlowSelection } from "@/components/flow/flow-canvas";
 import { NodeInspector } from "@/components/flow/node-inspector";
-import { BuildWithSwara, SwaraOrb } from "@/components/agents/build-with-swara";
+import { BuildWithSwara } from "@/components/agents/build-with-swara";
+import { SwaraChat } from "@/components/agents/swara-chat";
+import { Modal } from "@/components/ui/modal";
 
 // The canvas carries drag handling and per-node SVG; only the Flow builder
 // tab needs it, so it loads when that tab is first opened.
@@ -65,7 +67,7 @@ type Tab = "flow" | "prompt" | "knowledge" | "test" | "versions";
 
 const TABS = [
   { value: "flow" as const, label: "Flow builder" },
-  { value: "prompt" as const, label: "Single prompt" },
+  { value: "prompt" as const, label: "Agent role" },
   { value: "knowledge" as const, label: "Knowledge base" },
   { value: "test" as const, label: "Test & simulate" },
   { value: "versions" as const, label: "Versions" },
@@ -113,9 +115,9 @@ export default function AgentsPage() {
             <Button variant="ghost" onClick={() => setGallery(true)}>
               Templates
             </Button>
-            <Button variant="ghost" onClick={() => setCalling("swara")} title="Talk to Swara — she asks about your business and drafts the agents">
-              <Mic className="size-3.5" />
-              Talk to Swara
+            <Button variant="ghost" onClick={() => setCalling("swara")} title="Ask Swara — she interviews you and drafts the agents">
+              <Sparkles className="size-3.5" />
+              Ask Swara
             </Button>
             <Button variant="primary" onClick={() => { setSeedPlan(null); setBuilding(true); }}>
               <Sparkles className="size-3.5" />
@@ -206,7 +208,7 @@ export default function AgentsPage() {
               <>
                 {tab === "flow" ? <FlowTab key={selected.id} agent={selected} allAgents={agentsQuery.data ?? []} /> : null}
                 {tab === "prompt" ? <PromptTab key={selected.id} agent={selected} /> : null}
-                {tab === "knowledge" ? <KnowledgeTab /> : null}
+                {tab === "knowledge" ? <KnowledgeTab key={selected.id} agentId={selected.id} agentName={selected.name} /> : null}
                 {tab === "test" ? <TestTab agent={selected} onStartCall={() => setCalling("agent")} /> : null}
                 {tab === "versions" ? <VersionsTab /> : null}
               </>
@@ -234,44 +236,46 @@ export default function AgentsPage() {
 
       {selected ? (
         <CallPanel
+          key={`${selected.id}:${selected.voice ?? ""}`}
           open={calling === "agent"}
           onClose={() => setCalling(null)}
           agentId={selected.id}
           agentName={selected.name}
           languages={selected.languages}
+          initialVoice={selected.voice}
+          onUseVoice={async (voice) => {
+            try {
+              if (!IS_MOCK) await mutations.updateAgent(selected.id, { voice });
+              toast.success(`${selected.name} now speaks with ${voice}`, { description: "Real calls use this voice from the next call." });
+              void qc.invalidateQueries({ queryKey: qk.agents });
+            } catch {
+              toast.error("Could not save the voice");
+            }
+          }}
         />
       ) : null}
 
-      <CallPanel
+      <Modal
         open={calling === "swara"}
         onClose={() => setCalling(null)}
-        agentId={SWARA_AGENT_ID}
-        agentName="Swara"
-        fixedVoice="Kore"
-        startLabel="Talk to Swara"
-        intro={
-          <div className="mb-4 flex gap-3 rounded-[16px] border border-violet/25 bg-violet/[0.07] p-4">
-            <SwaraOrb size={40} />
-            <div className="text-[12.5px] leading-relaxed text-t2">
-              <span className="font-medium text-t1">Swara</span> asks about your business, who handles what, who a
-              call can go to, what can be booked — and writes it all into Workspace setup as you talk. When she has
-              enough, she proposes the agents and this page shows the plan for approval.
-            </div>
-          </div>
-        }
-        handlers={{
-          onToolResult: (name, result) => {
+        title="Ask Swara"
+        sub="She writes the workspace as you chat, then proposes agents for you to approve. Phone calls to your agents are unchanged."
+        width={520}
+      >
+        <SwaraChat
+          onSaved={() => {
             void qc.invalidateQueries({ queryKey: ["setup"] });
             void qc.invalidateQueries({ queryKey: qk.departments });
             void qc.invalidateQueries({ queryKey: qk.knowledge });
-            if (name === "propose_agents" && result.__plan) {
-              setSeedPlan(result.__plan as AgentPlan);
-              setBuilding(true);
-              toast("Swara proposed a plan", { description: "Review it and create the agents." });
-            }
-          },
-        }}
-      />
+          }}
+          onPlan={(plan) => {
+            setSeedPlan(plan);
+            setBuilding(true);
+            setCalling(null);
+            toast("Swara proposed a plan", { description: "Review it and create the agents. A failed retry leaves this plan in place." });
+          }}
+        />
+      </Modal>
 
       {gallery ? (
         <TemplateGallery
@@ -615,7 +619,10 @@ function FlowTab({ agent, allAgents }: { agent: Agent; allAgents: Agent[] }) {
     return m;
   }, [issues]);
 
-  const compiled = useMemo(() => compileFlow(graph.nodes, graph.edges, { agents: siblings }), [graph, siblings]);
+  const compiled = useMemo(
+    () => compileFlow(graph.nodes, graph.edges, { agents: siblings, allowTransfer: transferNames.length > 0 }),
+    [graph, siblings, transferNames.length],
+  );
   const [showCompiled, setShowCompiled] = useState(false);
 
   const addNode = (kind: FlowNode["kind"]) => {
@@ -849,13 +856,16 @@ function SaveIndicator({ state }: { state: "idle" | "saving" | "saved" | "error"
 function PromptTab({ agent }: { agent: Agent }) {
   const qc = useQueryClient();
   const [prompt, setPrompt] = useState(agent.prompt ?? "");
+  const [personaName, setPersonaName] = useState(agent.personaName ?? "");
+  const [voice, setVoice] = useState(agent.voice ?? "");
   const [busy, setBusy] = useState(false);
+  const identityDirty = personaName !== (agent.personaName ?? "") || voice !== (agent.voice ?? "");
 
   const save = async () => {
     setBusy(true);
     try {
-      if (!IS_MOCK) await mutations.updateAgent(agent.id, { prompt });
-      toast.success("Prompt saved — live on the next test call");
+      if (!IS_MOCK) await mutations.updateAgent(agent.id, { prompt, personaName, ...(voice ? { voice } : {}) });
+      toast.success("Role saved — live on the next test call");
       void qc.invalidateQueries({ queryKey: qk.agents });
     } catch {
       toast.error("Could not save prompt");
@@ -864,44 +874,55 @@ function PromptTab({ agent }: { agent: Agent }) {
     }
   };
 
+  const voiceOptions = LIVE_VOICES.map((v) => ({ value: v.name, label: `${v.label} — ${v.gender}, ${v.blurb}` }));
+
   return (
     <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Introduces itself as" hint="The first name the caller hears. Not the voice's stock name.">
+          <TextInput value={personaName} onChange={setPersonaName} placeholder={agent.name} />
+        </Field>
+        <Field label="Voice on real calls" hint="Try voices in Test, then save the one you like here or from the test panel.">
+          <Select value={voice} onChange={setVoice} options={voiceOptions} placeholder="Default for this job" />
+        </Field>
+      </div>
+      {identityDirty ? <p className="-mt-2 text-[11px] text-amber">Unsaved — Save role writes name and voice too.</p> : null}
       <Field
-        label="Role prompt"
-        hint="What this agent does and must never do. Voice craft, language-follow, the compiled flow, transfer desks, appointment types and the agent directory are added automatically at call time."
+        label="Agent role"
+        hint="The detailed role Swara writes for this agent: purpose, tone, how they speak, and what they must never do. Language follow, the flow, and the tool list are added on the call."
       >
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          rows={9}
+          rows={16}
           placeholder="You handle order status. Get the order ID or registered phone, look it up, lead with the status then the date. Never invent a status."
           className="glass w-full resize-y rounded-[14px] p-4 font-[family-name:var(--font-mono)] text-[12.5px] leading-relaxed text-t1 outline-none transition-colors focus:border-cyan/45"
         />
       </Field>
       <Button variant="primary" onClick={() => void save()} disabled={busy}>
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
-        Save prompt
+        Save role
       </Button>
 
       <div className="glass rounded-[14px] p-3.5">
-        <div className="mb-2 text-[11.5px] font-medium text-t2">Tools every agent can call</div>
+        <div className="mb-2 text-[11.5px] font-medium text-t2">Actions this agent can take</div>
         <div className="flex flex-wrap gap-2">
-          {["lookup_order", "register_complaint", "book_slot", "search_knowledge", "transfer_to_human", "handoff_to_agent", "end_call"].map((t) => (
+          {(agent.tools?.length ? agent.tools : ["end_call"]).map((t) => (
             <Pill key={t} tone="violet">
               <span className="font-[family-name:var(--font-mono)]">{t}</span>
             </Pill>
           ))}
         </div>
         <p className="mt-2 text-[11px] text-t3">
-          Transfer and booking need desks and slots from Workspace setup. Handoff passes the caller to another of your
-          agents with a summary. end_call hangs up after the closing line.
+          Only these run on a call. A transfer is included only when a human desk exists. Language is not set here —
+          the agent follows whatever language the caller is speaking, and switches when they do.
         </p>
       </div>
     </div>
   );
 }
 
-function KnowledgeTab() {
+function KnowledgeTab({ agentId, agentName }: { agentId: string; agentName: string }) {
   const query = useKnowledge();
   const qc = useQueryClient();
   const [name, setName] = useState("");
@@ -915,8 +936,8 @@ function KnowledgeTab() {
     }
     setBusy(true);
     try {
-      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text });
-      toast.success("Indexed");
+      if (!IS_MOCK) await mutations.addKnowledge({ name: name.trim(), kind: "text", text, agentId });
+      toast.success("Indexed for this agent");
       setName("");
       setText("");
       void qc.invalidateQueries({ queryKey: qk.knowledge });
@@ -931,10 +952,9 @@ function KnowledgeTab() {
     <div className="space-y-4">
       <div className="rounded-[18px] border border-dashed border-hairline bg-white/[0.02] p-6">
         <Upload className="mb-3 size-5 text-t3" strokeWidth={1.6} />
-        <p className="text-[13px] text-t1">Paste policy, fare or FAQ text</p>
+        <p className="text-[13px] text-t1">Knowledge for {agentName}</p>
         <p className="mt-1 mb-3 text-[11.5px] text-t3">
-          Grounds answers in your own content. Every agent searches this before answering a policy question. You can
-          also dictate it to Swara.
+          Only this agent searches these notes. Other agents do not see them. Paste the facts this role is allowed to quote.
         </p>
         <Field label="Name">
           <TextInput value={name} onChange={setName} placeholder="Refund policy" />
@@ -953,9 +973,9 @@ function KnowledgeTab() {
       </div>
 
       <QueryBoundary query={query} skeleton={<RowsSkeleton rows={4} />}>
-        {(docs) => (
+        {(all) => (
           <div>
-            {docs.map((d) => (
+            {all.filter((d) => d.agentId === agentId).map((d) => (
               <ListRow key={d.id}>
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-white/[0.06]">
                   {d.kind === "url" ? <Globe className="size-3.5 text-t2" strokeWidth={1.7} /> : <FileText className="size-3.5 text-t2" strokeWidth={1.7} />}

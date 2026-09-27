@@ -95,7 +95,10 @@ export function MetricCard({
   } as const;
 
   return (
-    <Card className="p-[18px]" onClick={onClick}>
+    // h-full + a footnote row that is always laid out (empty or not), so four
+    // tiles in a grid come out the same height whether or not each has a
+    // sub-line. Uneven tiles read as a bug on the very first screen.
+    <Card className="flex h-full flex-col p-[18px]" onClick={onClick}>
       <div className="mb-3 flex items-center justify-between">
         <div
           className={cn(
@@ -120,7 +123,7 @@ export function MetricCard({
         {value}
       </div>
       <div className="mt-0.5 text-xs text-t2">{label}</div>
-      {footnote ? <div className="mt-2 text-[11px] text-t3">{footnote}</div> : null}
+      <div className="mt-auto min-h-[16px] pt-2 text-[11px] leading-4 text-t3">{footnote ?? "\u00a0"}</div>
     </Card>
   );
 }

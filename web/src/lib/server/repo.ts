@@ -100,6 +100,10 @@ export function overview(orgId: string) {
     "SELECT COUNT(*) n FROM complaints WHERE org_id=? AND opened_at>=? AND opened_at<?",
     orgId, twoWeeks, week,
   );
+  const pastSla = count(
+    "SELECT COUNT(*) n FROM complaints WHERE org_id=? AND stage!='resolved' AND sla_due_at<?",
+    orgId, nowIso(),
+  );
 
   // "Live" needs a heartbeat guard: a browser tab killed mid-call never sends
   // its completion, and a phantom active call on the wall board destroys trust
@@ -140,6 +144,7 @@ export function overview(orgId: string) {
     resolutionDelta: +(resolutionRate - resolutionPrev).toFixed(3),
     openComplaints,
     complaintsDelta: openedThisWeek - openedPrevWeek,
+    pastSla,
     activeCalls,
     volume,
     languageMix,
@@ -545,7 +550,11 @@ export function agents(orgId: string) {
   const todayBy = new Map(stats.map((s) => [s.agent_id, s]));
   const weekBy = new Map(weekStats.map((s) => [s.agent_id, s]));
 
-  return (d.prepare("SELECT * FROM agents WHERE org_id=? ORDER BY name").all(orgId) as Row[]).map((r) => ({
+  return (d.prepare(
+    `SELECT a.*, v.live_name voice_live_name FROM agents a
+     LEFT JOIN voices v ON v.id=a.voice_id AND v.org_id=a.org_id
+     WHERE a.org_id=? ORDER BY a.name`,
+  ).all(orgId) as Row[]).map((r) => ({
     id: r.id as string,
     name: r.name as string,
     status: r.status as string,
@@ -553,8 +562,12 @@ export function agents(orgId: string) {
     intent: r.intent as string,
     direction: r.direction as string,
     voiceId: (r.voice_id as string) ?? undefined,
+    /** Live API voice name, resolved from the org's voice row. */
+    voice: (r.voice_live_name as string) ?? undefined,
+    personaName: (r.persona_name as string) ?? undefined,
     mode: r.mode as string,
     prompt: (r.prompt as string) ?? undefined,
+    tools: r.tools ? (JSON.parse(r.tools as string) as string[]) : [],
     nodes: JSON.parse(r.nodes as string),
     edges: JSON.parse(r.edges as string),
     version: r.version as number,
@@ -589,6 +602,7 @@ export function knowledgeDocs(orgId: string) {
     // Seeded docs carry no chunks; show their catalogued size instead of 0.
     chunks: (r.chunk_count as number) || fallbackChunks(r),
     status: r.status as string,
+    agentId: (r.agent_id as string) ?? null,
     updatedAt: r.updated_at as string,
   }));
 }
@@ -980,23 +994,39 @@ export function createAgent(orgId: string, data: {
   nodes?: unknown[];
   edges?: unknown[];
   voiceId?: string;
+  /** Live API voice name; resolved to this org's voice row. */
+  voice?: string;
+  personaName?: string;
   languages?: string[];
+  tools?: string[];
 }) {
   const id = uid("ag");
   db().prepare(
-    `INSERT INTO agents (id, org_id, name, status, languages, intent, direction, voice_id, mode, prompt, nodes, edges, version, updated_at)
-     VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    `INSERT INTO agents (id, org_id, name, status, languages, intent, direction, voice_id, persona_name, mode, prompt, tools, nodes, edges, version, updated_at)
+     VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
   ).run(
     id, orgId, data.name,
-    JSON.stringify(data.languages ?? ["hi", "en", "hinglish"]),
-    data.intent, data.direction ?? "inbound", data.voiceId ?? null,
+    JSON.stringify(data.languages ?? ["hi", "en", "hinglish", "ta", "te", "kn", "ml", "mr", "bn", "gu", "pa", "or"]),
+    data.intent, data.direction ?? "inbound",
+    data.voiceId ?? voiceRowId(orgId, data.voice) ?? null,
+    data.personaName?.trim() || null,
     data.nodes && data.nodes.length ? "graph" : "prompt",
     data.prompt ?? null,
+    data.tools ? JSON.stringify(data.tools) : null,
     JSON.stringify(data.nodes ?? []),
     JSON.stringify(data.edges ?? []),
     nowIso(),
   );
   return id;
+}
+
+/** The org's voice row for a Live voice name ("Orus"), or null. */
+export function voiceRowId(orgId: string, liveName: string | undefined | null) {
+  if (!liveName) return null;
+  const row = db()
+    .prepare("SELECT id FROM voices WHERE org_id=? AND (live_name=? OR id=?) ORDER BY cloned ASC LIMIT 1")
+    .get(orgId, liveName, liveName) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 export function updateAgent(orgId: string, id: string, data: {
@@ -1006,11 +1036,14 @@ export function updateAgent(orgId: string, id: string, data: {
   nodes?: unknown[];
   edges?: unknown[];
   voiceId?: string;
+  voice?: string;
+  personaName?: string;
+  tools?: string[];
 }) {
   const current = db().prepare("SELECT * FROM agents WHERE id=? AND org_id=?").get(id, orgId) as Row | undefined;
   if (!current) return { error: "No such agent" } as const;
   db().prepare(
-    `UPDATE agents SET name=?, prompt=?, status=?, nodes=?, edges=?, voice_id=?,
+    `UPDATE agents SET name=?, prompt=?, status=?, nodes=?, edges=?, voice_id=?, persona_name=?, tools=?,
        mode=?, version=version+1, updated_at=? WHERE id=? AND org_id=?`,
   ).run(
     data.name ?? current.name,
@@ -1018,7 +1051,9 @@ export function updateAgent(orgId: string, id: string, data: {
     data.status ?? current.status,
     JSON.stringify(data.nodes ?? JSON.parse(current.nodes as string)),
     JSON.stringify(data.edges ?? JSON.parse(current.edges as string)),
-    data.voiceId ?? current.voice_id,
+    data.voiceId ?? voiceRowId(orgId, data.voice) ?? current.voice_id,
+    data.personaName !== undefined ? data.personaName.trim() || null : current.persona_name,
+    data.tools ? JSON.stringify(data.tools) : current.tools,
     (data.nodes && data.nodes.length) || JSON.parse(current.nodes as string).length ? "graph" : "prompt",
     nowIso(), id, orgId,
   );

@@ -149,7 +149,7 @@ export function validateFlow(
 export function compileFlow(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  ctx: { agents: { id: string; name: string }[] },
+  ctx: { agents: { id: string; name: string }[]; allowTransfer?: boolean },
 ): string {
   if (nodes.length === 0) return "";
   const start = nodes.find((n) => n.kind === "start") ?? nodes[0];
@@ -175,7 +175,7 @@ export function compileFlow(
   };
 
   const lines: string[] = [
-    "CALL FLOW — follow these steps in order. Branch where told. Do not skip a step that collects or confirms information.",
+    "CALL SHAPE — the order a typical call takes. It is a map, not a script: listen to what the caller actually says, and skip any step that is already satisfied. Never ask for a detail the caller has already given. Never read step names or numbers aloud.",
   ];
 
   for (const n of order) {
@@ -187,14 +187,14 @@ export function compileFlow(
 
     switch (n.kind) {
       case "start":
-        lines.push(`${head}: open the call.${cfg.script ? ` Say: "${cfg.script}"` : ""} Follow the caller's language from their first words.${next}${note}`);
+        lines.push(`${head}: open the call in one sentence — your name, where you are calling from or answering for, then an open question or the reason you called.${cfg.script ? ` Say: "${cfg.script}"` : ""} Then stop and listen. Follow the caller's language from their first words.${next}${note}`);
         break;
       case "say":
         lines.push(`${head}: say${cfg.script ? `: "${cfg.script}"` : " this in one or two sentences"}.${next}${note}`);
         break;
       case "collect": {
         const fields = cfg.fields?.length ? cfg.fields.join(", ") : n.detail || "the details you need";
-        lines.push(`${head}: collect ${fields} — one at a time, read each back, get a yes.${next}${note}`);
+        lines.push(`${head}: you need ${fields}. Ask only for what you do not already have, one thing per turn, in a natural sentence that says why. Repeat back numbers and spellings once; do not repeat back anything else.${next}${note}`);
         break;
       }
       case "intent":
@@ -205,17 +205,21 @@ export function compileFlow(
           const opts = outs
             .map((e) => `if ${e.label || byId.get(e.to)?.title || "so"} → ${ref(e.to)}`)
             .join("; ");
-          lines.push(`${head}: ${n.kind === "intent" ? "work out what the caller wants" : n.detail || "decide"}: ${opts}.${note}`);
+          lines.push(`${head}: ${n.kind === "intent" ? "work out what the caller wants from what they say — ask one open question only if it is not clear" : n.detail || "decide"}: ${opts}.${note}`);
         }
         break;
       }
       case "data_pull":
-        lines.push(`${head}: call ${cfg.tool ?? "the relevant tool"} and answer only from its result. Say a short filler while it runs.${next}${note}`);
+        lines.push(`${head}: call ${cfg.tool ?? "the relevant tool"} and answer only from its result. Say one short natural line while it runs ("ek second, dekhti hoon"), not a speech.${next}${note}`);
         break;
       case "book":
         lines.push(`${head}: offer two concrete slots${cfg.appointmentType ? ` for "${cfg.appointmentType}"` : ""}, confirm date, time and location, then call book_slot. Not booked until the tool says so.${next}${note}`);
         break;
       case "escalate":
+        if (ctx.allowTransfer === false) {
+          lines.push(`${head}: there is no human to transfer to. Say that in one sentence, take their name if you do not have it, confirm the number they are calling from is fine for a callback, and do not call transfer_to_human.${note}`);
+          break;
+        }
         lines.push(`${head}: tell the caller you are connecting them${cfg.transferTarget ? ` to ${cfg.transferTarget}` : " to a colleague"}, then call transfer_to_human${cfg.transferTarget ? ` with target_name "${cfg.transferTarget}"` : ""}. This ends your part of the call.${note}`);
         break;
       case "handoff": {
@@ -224,7 +228,11 @@ export function compileFlow(
         break;
       }
       case "end":
-        lines.push(`${head}: ${cfg.script ? `say "${cfg.script}", ` : "close warmly, ask if anything else is needed, "}then call end_call.${cfg.hangUp === false ? " Wait for the caller to hang up." : ""}${note}`);
+        lines.push(
+          cfg.script
+            ? `${head}: say "${cfg.script}", then call end_call.${cfg.hangUp === false ? " Wait for the caller to hang up." : ""}${note}`
+            : `${head}: this is two turns, never one. First turn: ask only "is there anything else?" and stop. Wait. If they bring up something new, you are not at this step any more. Second turn, only after they say no or say bye: one warm closing sentence, then call end_call.${cfg.hangUp === false ? " Wait for the caller to hang up." : ""}${note}`,
+        );
         break;
     }
   }

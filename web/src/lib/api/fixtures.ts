@@ -345,6 +345,7 @@ export const overview: Overview = {
   resolutionDelta: 0.021,
   openComplaints: 6,
   complaintsDelta: -3,
+  pastSla: 1,
   activeCalls: liveCalls.length,
   volume: Array.from({ length: 7 }, (_, i) => {
     const d = 6 - i;

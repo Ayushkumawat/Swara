@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { ArrowRight, ArrowRightLeft, Check, Loader2, PhoneIncoming, PhoneOutgoing, Sparkles, TriangleAlert, X } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
+import { Select } from "@/components/ui/controls";
+import { LIVE_VOICES } from "@/lib/live/config";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { usePlaybook } from "@/lib/api/hooks";
 import { INTENT_LABEL, type AgentPlan, type PlannedAgent } from "@/lib/api/schemas";
@@ -67,6 +69,7 @@ export function BuildWithSwara({
   };
 
   const runPlan = async (extraAnswers?: Record<string, string>) => {
+    const kept = plan;
     setStep("planning");
     try {
       const next = IS_MOCK
@@ -76,8 +79,12 @@ export function BuildWithSwara({
       setSelected(Object.fromEntries(next.agents.map((a) => [a.key, true])));
       setStep("review");
     } catch (error) {
-      toast.error("Swara could not draft a plan", { description: error instanceof Error ? error.message : undefined });
-      setStep("brief");
+      toast.error("Planning failed — nothing was replaced", {
+        description: kept
+          ? "Your current plan is still here. Retry when the model responds."
+          : errorText(error),
+      });
+      setStep(kept ? "review" : "brief");
     }
   };
 
@@ -207,6 +214,9 @@ export function BuildWithSwara({
                             {plan.source === "gemini" ? "Designed by Swara" : "Designed from your playbook (no model key)"} ·{" "}
                             {plan.agents.length} agents · {plan.agents.reduce((n, a) => n + a.nodes.length, 0)} steps
                           </p>
+                          <Button size="sm" variant="subtle" className="mt-2" onClick={() => void runPlan()}>
+                            Retry plan
+                          </Button>
                         </div>
                       </div>
                     </div>
@@ -233,6 +243,11 @@ export function BuildWithSwara({
                           plan={plan}
                           checked={!!selected[a.key]}
                           onToggle={() => setSelected((s) => ({ ...s, [a.key]: !s[a.key] }))}
+                          onChange={(patch) =>
+                            setPlan((p) =>
+                              p ? { ...p, agents: p.agents.map((x) => (x.key === a.key ? { ...x, ...patch } : x)) } : p,
+                            )
+                          }
                         />
                       ))}
                     </div>
@@ -394,32 +409,33 @@ function PlannedAgentCard({
   plan,
   checked,
   onToggle,
+  onChange,
 }: {
   agent: PlannedAgent;
   index: number;
   plan: AgentPlan;
   checked: boolean;
   onToggle: () => void;
+  onChange: (patch: Partial<Pick<PlannedAgent, "personaName" | "voice">>) => void;
 }) {
   const handoffNames = useMemo(
     () => agent.handsOffTo.map((k) => plan.agents.find((a) => a.key === k)?.name ?? k),
     [agent.handsOffTo, plan.agents],
   );
   const Dir = agent.direction === "outbound" ? PhoneOutgoing : PhoneIncoming;
+  const voiceOptions = LIVE_VOICES.map((v) => ({ value: v.name, label: `${v.label} · ${v.gender}` }));
 
   return (
-    <motion.button
-      type="button"
+    <motion.div
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.06, duration: 0.3 }}
-      onClick={onToggle}
       className={cn(
         "rounded-[16px] border p-4 text-left transition-colors",
         checked ? "border-cyan/35 bg-white/[0.06]" : "border-hairline bg-white/[0.02] opacity-60",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
+      <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-2 text-left">
         <div className="flex items-center gap-2">
           <span
             className={cn(
@@ -432,8 +448,23 @@ function PlannedAgentCard({
           <span className="text-[13.5px] font-medium text-t1">{agent.name}</span>
         </div>
         {agent.isFrontDoor ? <Pill tone="cyan">Front door</Pill> : null}
-      </div>
+      </button>
       <p className="mt-2 text-[12px] leading-relaxed text-t2">{agent.job}</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-[10.5px] uppercase tracking-wide text-t3">Introduces itself as</span>
+          <input
+            value={agent.personaName}
+            onChange={(e) => onChange({ personaName: e.target.value })}
+            placeholder="First name"
+            className="glass w-full rounded-[10px] px-2.5 py-1.5 text-[12px] text-t1 outline-none"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10.5px] uppercase tracking-wide text-t3">Voice</span>
+          <Select size="sm" value={agent.voice} onChange={(v) => onChange({ voice: v })} options={voiceOptions} />
+        </label>
+      </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
         <Pill tone="violet">{INTENT_LABEL[agent.intent]}</Pill>
         <Pill>
@@ -452,7 +483,7 @@ function PlannedAgentCard({
           hands off to {handoffNames.join(", ")}
         </div>
       ) : null}
-    </motion.button>
+    </motion.div>
   );
 }
 
@@ -519,10 +550,21 @@ export function SwaraOrb({ active, size = 36 }: { active?: boolean; size?: numbe
   );
 }
 
+function errorText(error: unknown) {
+  const raw = error instanceof Error ? error.message : "";
+  try {
+    const parsed = JSON.parse(raw) as { error?: string };
+    if (parsed.error) return parsed.error;
+  } catch {
+    /* body was plain text */
+  }
+  return raw || "The model did not respond.";
+}
+
 /** Mock-mode plan so the wizard demos without a backend. */
 function mockPlan(brief: string): AgentPlan {
   const mk = (key: string, name: string, job: string, intent: PlannedAgent["intent"], direction: PlannedAgent["direction"], handsOffTo: string[] = [], isFrontDoor = false): PlannedAgent => ({
-    key, name, job, intent, direction, handsOffTo, isFrontDoor, needs: [], prompt: job,
+    key, name, job, intent, direction, handsOffTo, isFrontDoor, needs: [], prompt: job, tools: [], knowledge: "", personaName: "Riya", voice: "Kore",
     nodes: [
       { id: `${key}_s`, kind: "start", title: "Greet", x: 40, y: 40, config: {} },
       { id: `${key}_i`, kind: "intent", title: "What do they need?", x: 300, y: 40, config: {} },

@@ -6,6 +6,7 @@ import { notifyTicket, lookupTickets, registerTicket, resolveTicket } from "./ti
 import {
   appointmentTypes,
   logToolInvocation,
+  playbook,
   setupStatus,
   transferTargets,
   upsertAppointmentType,
@@ -60,7 +61,7 @@ async function runTool(
     case "register_complaint":
       return registerComplaint(orgId, callId, args);
     case "lookup_ticket":
-      return lookupTicketTool(orgId, args);
+      return lookupTicketTool(orgId, callId, args);
     case "notify_stakeholder":
       return notifyTicketTool(orgId, callId, args);
     case "resolve_ticket":
@@ -68,10 +69,13 @@ async function runTool(
     case "book_slot":
       return bookSlot(orgId, args);
     case "search_knowledge": {
-      const results = await searchKnowledge(orgId, String(args.query ?? ""));
+      const agentId = callId
+        ? (getDb().prepare("SELECT agent_id FROM calls WHERE id=? AND org_id=?").get(callId, orgId) as { agent_id: string } | undefined)?.agent_id
+        : undefined;
+      const results = await searchKnowledge(orgId, String(args.query ?? ""), 4, agentId);
       return results.length
         ? { found: true, results: results.map((r) => ({ source: r.doc, text: r.content.slice(0, 500) })) }
-        : { found: false, note: "Nothing relevant in the knowledge base. Say you don't have this detail and offer a follow-up. Do not guess." };
+        : { found: false, note: "Nothing in this agent's knowledge. Say you don't have this detail. Do not guess, and do not use another team's policy." };
     }
     case "transfer_to_human":
       return transferHuman(orgId, args);
@@ -148,30 +152,44 @@ async function runTool(
       const name = str(args.name);
       const text = str(args.text);
       if (!name || !text || text.length < 20) return { error: "Need a name and at least a full sentence of text." };
-      const doc = await ingestKnowledgeDoc(orgId, name, "text", text);
-      return { saved: true, document: name, chunks: doc.chunks, note: "Agents will search this before answering policy questions." };
+      const doc = await ingestKnowledgeDoc(orgId, name, "text", text, agentIdFor(orgId, str(args.agent_name)));
+      return { saved: true, document: name, chunks: doc.chunks, note: "Only the agent this was filed under will search it." };
     }
     case "propose_agents": {
       const brief = str(args.brief) ?? "";
       const proposed = Array.isArray(args.agents) ? (args.agents as Record<string, unknown>[]) : [];
-      const plan = await planAgents(orgId, {
-        brief: [
-          brief,
-          proposed.length
-            ? `Swara proposes: ${proposed.map((a) => `${a.name} (${a.direction}, ${a.intent}): ${a.job}`).join(" | ")}`
-            : "",
-        ].filter(Boolean).join("\n"),
-      });
-      // The plan is handed to the console through the tool result. The
-      // browser session surfaces it in the Build-with-Swara panel for
-      // approval; nothing is created until the owner says so.
-      return {
-        proposed: true,
-        agents: plan.agents.map((a) => `${a.name} — ${a.direction}`),
-        gaps: plan.gaps,
-        note: "The console is showing this plan for approval. Describe it in three sentences and ask if anything should change.",
-        __plan: plan,
-      };
+      try {
+        const plan = await planAgents(orgId, {
+          brief: [
+            brief,
+            proposed.length
+              ? `Swara proposes: ${proposed
+                  .map((a) => {
+                    const bits = [`${a.name} (${a.direction}, ${a.intent}): ${a.job}`];
+                    if (str(a.persona_name)) bits.push(`introduces itself as ${str(a.persona_name)}`);
+                    if (str(a.voice)) bits.push(`voice ${str(a.voice)}`);
+                    return bits.join("; ");
+                  })
+                  .join(" | ")}`
+              : "",
+          ].filter(Boolean).join("\n"),
+        });
+        // The plan is handed to the console through the tool result. The
+        // browser session surfaces it in the Build-with-Swara panel for
+        // approval; nothing is created until the owner says so.
+        return {
+          proposed: true,
+          agents: plan.agents.map((a) => `${a.name} — ${a.direction}`),
+          gaps: plan.gaps,
+          note: "The console is showing this plan for approval. Describe it in three sentences and ask if anything should change.",
+          __plan: plan,
+        };
+      } catch (error) {
+        return {
+          error: error instanceof Error ? error.message : "Planning failed",
+          note: "Do not invent a replacement set of agents. Tell the owner the model failed and to retry. Leave the workspace as it is.",
+        };
+      }
     }
     default:
       return { error: `Unknown tool ${name}` };
@@ -180,6 +198,14 @@ async function runTool(
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 const strList = (v: unknown) => (Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : undefined);
+
+function agentIdFor(orgId: string, name: string | undefined) {
+  if (!name) return null;
+  const row = getDb()
+    .prepare("SELECT id FROM agents WHERE org_id=? AND lower(name)=lower(?)")
+    .get(orgId, name) as { id: string } | undefined;
+  return row?.id ?? null;
+}
 
 /**
  * Handoff to a sibling agent. The tool result carries a control record the
@@ -290,45 +316,108 @@ async function lookupOrder(orgId: string, args: Record<string, unknown>) {
   };
 }
 
+/** The number the caller is on, so tools never depend on the model re-asking for it. */
+function callPhone(orgId: string, callId: string | null) {
+  if (!callId) return undefined;
+  const row = getDb().prepare("SELECT phone FROM calls WHERE id=? AND org_id=?").get(callId, orgId) as { phone: string } | undefined;
+  const p = row?.phone?.trim();
+  return p && p !== "unknown" && p.replace(/\D/g, "").length >= 10 ? p : undefined;
+}
+
+const STOP = new Set(["the", "a", "an", "at", "in", "on", "of", "for", "to", "and", "is", "not", "no", "with", "about", "station", "metro", "complaint", "issue", "problem"]);
+const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w)));
+
+/** Same caller, still open, same category or clearly the same words → likely the same complaint. */
+function similarOpenTickets(orgId: string, phone: string | undefined, title: string, category: string) {
+  if (!phone) return [];
+  const since = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+  const mine = lookupTickets(orgId, { phone }).filter((t) => t.stage !== "resolved" && t.openedAt >= since);
+  const mineWords = words(title);
+  return mine.filter((t) => {
+    if (t.category.toLowerCase() === category.toLowerCase() && category.toLowerCase() !== "other") return true;
+    const shared = [...words(t.title)].filter((w) => mineWords.has(w)).length;
+    return shared >= 2 || (shared >= 1 && mineWords.size <= 3);
+  });
+}
+
 async function registerComplaint(orgId: string, callId: string | null, args: Record<string, unknown>) {
-  const filed = await registerTicket(orgId, callId, args);
+  const phone = str(args.phone) ?? callPhone(orgId, callId) ?? "";
+  const title = String(args.title ?? "");
+  const category = String(args.category ?? "other");
+
+  // A second ticket for the same thing helps nobody: the desk works it twice
+  // and the caller gets two numbers. Surface the existing one and let the
+  // agent ask; a genuinely new issue goes through with confirm_new.
+  if (args.confirm_new !== true) {
+    const dupes = similarOpenTickets(orgId, phone, title, category);
+    if (dupes.length) {
+      return {
+        registered: false,
+        possible_duplicate: true,
+        existing: dupes.slice(0, 3).map((t) => ({
+          reference_number: t.ref,
+          title: t.title,
+          stage: t.stage.replace("_", " "),
+          opened_at: t.openedAt,
+          department: t.department,
+        })),
+        note:
+          `This caller already has an open ${dupes[0].kind} ${dupes[0].ref} about "${dupes[0].title}" (${dupes[0].stage.replace("_", " ")}). ` +
+          "Tell them you can see it and where it stands, and ask if this is the same issue. If it is the same, do NOT file again — offer to notify the desk (notify_stakeholder) and give them the existing reference. " +
+          "Only if they say it is a different problem, call register_complaint again with confirm_new: true.",
+      };
+    }
+  }
+
+  const filed = await registerTicket(orgId, callId, { ...args, phone });
   return {
     registered: true,
     reference_number: filed.ref,
     kind: filed.kind,
     routed_to: filed.routed_to,
     sla: "48 business hours",
-    note: "Read the reference number back digit by digit. The caller can quote this number or their name to check status later.",
+    note: "Read the reference number back digit by digit, once. The caller can quote this number, or just call from this phone, to check status later.",
   };
 }
 
-function lookupTicketTool(orgId: string, args: Record<string, unknown>) {
-  const hits = lookupTickets(orgId, {
-    reference: str(args.reference_number) ?? str(args.reference),
+function lookupTicketTool(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const reference = str(args.reference_number) ?? str(args.reference);
+  const phone = str(args.phone) ?? (reference ? undefined : callPhone(orgId, callId));
+  let hits = lookupTickets(orgId, {
+    reference,
     customerName: str(args.customer_name),
-    phone: str(args.phone),
+    phone,
   });
+  // A wrong-by-one reference or a misheard name should not dead-end the
+  // caller when the phone they are on identifies them.
+  if (!hits.length) {
+    const byPhone = callPhone(orgId, callId);
+    if (byPhone) hits = lookupTickets(orgId, { phone: byPhone });
+  }
   if (!hits.length) {
     return {
       found: false,
-      note: "No ticket matches that reference and name. Confirm the number digit by digit, or file a new one.",
+      note: "No ticket for this caller — not by that reference, and none filed from the number they are calling from. Say so plainly; do not suggest their complaint is 'still updating'. Offer to file it now.",
     };
   }
   const t = hits[0];
+  const stageWord = t.stage === "resolved" ? "closed — marked done" : t.stage === "in_progress" ? "in progress — the desk is working on it" : t.stage === "escalated" ? "escalated" : "open — filed, waiting to be picked up";
   return {
     found: true,
     reference_number: t.ref,
     kind: t.kind,
     title: t.title,
     stage: t.stage,
+    status_in_words: stageWord,
     customer_name: t.customerName,
     department: t.department,
     opened_at: t.openedAt,
     matches: hits.length,
+    others: hits.slice(1, 4).map((o) => ({ reference_number: o.ref, title: o.title, stage: o.stage })),
     note:
       t.stage === "resolved"
         ? "This ticket is already marked done. Tell the caller that and ask if a new issue came up."
-        : `Routed to ${t.department ?? "the team"}. Status is ${t.stage.replace("_", " ")}.`,
+        : `Routed to ${t.department ?? "the team"}. Status: ${stageWord}.${hits.length > 1 ? ` They have ${hits.length} tickets — ask which one they mean if unclear.` : ""}`,
   };
 }
 
@@ -392,6 +481,11 @@ async function bookSlot(orgId: string, args: Record<string, unknown>) {
 }
 
 function transferHuman(orgId: string, args: Record<string, unknown>) {
+  if (playbook(orgId).extra.humanEscalation === false) {
+    return {
+      error: "The owner said there is no human to transfer to. Say that, take a name and callback number, and do not offer a transfer.",
+    };
+  }
   const targets = transferTargets(orgId);
   if (targets.length === 0) {
     return {

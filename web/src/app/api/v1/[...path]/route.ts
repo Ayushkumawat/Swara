@@ -8,6 +8,7 @@ import { executeTool } from "@/lib/server/tools";
 import { ingestKnowledgeDoc } from "@/lib/server/ai";
 import * as ws from "@/lib/server/workspace";
 import { applyPlan, planAgents } from "@/lib/server/planner";
+import { runSwaraChat } from "@/lib/server/swara-chat";
 import { AgentPlanSchema, UseCaseSchema } from "@/lib/api/schemas";
 
 /**
@@ -145,6 +146,7 @@ const KnowledgeBody = z.object({
   /** Extracted text. Parsing PDFs/crawling URLs belongs in a worker later;
    *  the API takes text so the pipeline downstream is already real. */
   text: z.string().min(20).max(500_000),
+  agentId: z.string().optional(),
 });
 const CreateAgentBody = z.object({
   name: z.string().min(1).optional(),
@@ -166,6 +168,12 @@ const PlaybookBody = z.object({
 const PlanBody = z.object({
   brief: z.string().max(4000).default(""),
   answers: z.record(z.string(), z.string()).optional(),
+});
+const SwaraChatBody = z.object({
+  messages: z
+    .array(z.object({ role: z.enum(["user", "model"]), text: z.string().max(8000) }))
+    .min(1)
+    .max(40),
 });
 const ApplyPlanBody = z.object({ plan: AgentPlanSchema.pick({ agents: true }) });
 const DepartmentBody = z.object({
@@ -296,7 +304,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     if (!user) return json({ error: "Not signed in" }, 401);
     const parsed = KnowledgeBody.safeParse(body);
     if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid document" }, 400);
-    const doc = await ingestKnowledgeDoc(user.orgId, parsed.data.name, parsed.data.kind, parsed.data.text);
+    const doc = await ingestKnowledgeDoc(user.orgId, parsed.data.name, parsed.data.kind, parsed.data.text, parsed.data.agentId);
     return json(doc, 201);
   }
 
@@ -358,19 +366,33 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     return json(ws.publicPlaybook(user.orgId));
   }
 
+  if (key === "swara/chat") {
+    const parsed = SwaraChatBody.safeParse(body);
+    if (!parsed.success) return json({ error: "Send at least one message" }, 400);
+    try {
+      return json(await runSwaraChat(orgId, parsed.data.messages));
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Swara could not reply" }, 502);
+    }
+  }
+
   // Swara's planner: brief in, reviewable plan out; nothing is written until
   // the owner applies it.
   if (key === "agents/plan") {
     const parsed = PlanBody.safeParse(body);
     if (!parsed.success) return json({ error: "Invalid brief" }, 400);
-    return json(await planAgents(user.orgId, parsed.data));
+    try {
+      return json(await planAgents(user.orgId, parsed.data));
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Swara could not draft a plan" }, 503);
+    }
   }
 
   if (key === "agents/plan/apply") {
     const parsed = ApplyPlanBody.safeParse(body);
     if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid plan" }, 400);
     if (parsed.data.plan.agents.length === 0) return json({ error: "Plan has no agents" }, 400);
-    return json({ created: applyPlan(user.orgId, parsed.data.plan) }, 201);
+    return json({ created: await applyPlan(user.orgId, parsed.data.plan) }, 201);
   }
 
   if (key === "departments") {
@@ -466,6 +488,9 @@ const AgentPatch = z.object({
   nodes: z.array(z.unknown()).optional(),
   edges: z.array(z.unknown()).optional(),
   voiceId: z.string().optional(),
+  /** Live voice name, e.g. from the test panel's picker. */
+  voice: z.string().optional(),
+  personaName: z.string().max(40).optional(),
 });
 const VoicePatch = z.object({
   promptTemplate: z.string().optional(),
