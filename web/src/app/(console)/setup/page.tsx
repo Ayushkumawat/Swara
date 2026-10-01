@@ -49,9 +49,7 @@ export default function SetupPage() {
   const playbook = usePlaybook();
   const status = useSetupStatus();
   const qc = useQueryClient();
-  const router = useRouter();
-  const [swaraOpen, setSwaraOpen] = useState(true);
-  const [lastSaved, setLastSaved] = useState<string | null>(null);
+  const openSwara = useUi((s) => s.openSwara);
 
   const useCase = (playbook.data?.useCase ?? "other") as UseCase;
   const profile = USE_CASES[useCase];
@@ -77,66 +75,33 @@ export default function SetupPage() {
         title="Workspace setup"
         sub="Everything the agents need before they can act — or just tell Swara and she fills it in"
         actions={
-          <Button variant={swaraOpen ? "ghost" : "primary"} onClick={() => setSwaraOpen((v) => !v)}>
+          <Button variant="primary" onClick={() => openSwara()}>
             <Sparkles className="size-3.5" />
-            {swaraOpen ? "Hide Swara" : "Talk to Swara"}
+            Talk to Swara
           </Button>
         }
       />
 
-      <div className={cn("grid gap-3.5", swaraOpen && "lg:grid-cols-[360px_1fr]")}>
-        <AnimatePresence initial={false}>
-          {swaraOpen ? (
-            <motion.div
-              key="swara"
-              initial={{ opacity: 0, x: -12 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              transition={{ duration: 0.22 }}
-              className="space-y-3.5 lg:sticky lg:top-[76px] lg:self-start"
-            >
-              <Card interactive={false}>
-                <div className="mb-3 flex items-start gap-3">
-                  <SwaraOrb size={40} />
-                  <div>
-                    <div className="font-[family-name:var(--font-display)] text-[14.5px] font-semibold text-t1">Set up by talking</div>
-                    <p className="mt-0.5 text-[11.5px] leading-relaxed text-t3">
-                      Swara asks what you do, who handles what, who a call can reach, what can be booked — and saves
-                      each answer here as you type.
-                    </p>
-                  </div>
-                </div>
-                <SwaraChat
-                  onSaved={(name) => {
-                    refreshAll();
-                    setLastSaved(name);
-                  }}
-                  onPlan={() => {
-                    toast("Swara proposed your agents", {
-                      description: "Open Agents & flows to review and create them. If planning failed, retry — nothing already saved was reset.",
-                      action: { label: "Open", onClick: () => router.push("/agents") },
-                    });
-                  }}
-                />
-                <AnimatePresence>
-                  {lastSaved ? (
-                    <motion.p
-                      key={lastSaved}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="mt-2 flex items-center gap-1.5 text-[11px] text-cyan"
-                    >
-                      <Check className="size-3" /> Saved from the conversation — the forms on the right update live.
-                    </motion.p>
-                  ) : null}
-                </AnimatePresence>
-              </Card>
+      <div className="grid gap-3.5 lg:grid-cols-[320px_1fr]">
+        <div className="space-y-3.5 lg:sticky lg:top-[76px] lg:self-start">
+          <Card interactive={false}>
+            <div className="flex items-start gap-3">
+              <SwaraOrb size={40} />
+              <div className="min-w-0">
+                <div className="font-[family-name:var(--font-display)] text-[14.5px] font-semibold text-t1">Set up by talking</div>
+                <p className="mt-0.5 text-[11.5px] leading-relaxed text-t3">
+                  Tell Swara what you do, who handles what, who a call can reach and what can be booked. She saves
+                  each answer here as you chat, and the forms update live.
+                </p>
+                <Button size="sm" variant="subtle" className="mt-2.5" onClick={() => openSwara()}>
+                  <Sparkles className="size-3.5" /> Open Swara
+                </Button>
+              </div>
+            </div>
+          </Card>
 
-              <ReadinessCard status={status.data} useCase={useCase} onJump={setTab} />
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+          <ReadinessCard status={status.data} useCase={useCase} onJump={setTab} />
+        </div>
 
         <div className="min-w-0">
           <Tabs tabs={tabs} value={tab} onChange={setTab} className="mb-4" />
