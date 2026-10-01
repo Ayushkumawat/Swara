@@ -469,7 +469,7 @@ export function Select<T extends string>({
                     ...(pos.up ? { bottom: window.innerHeight - pos.top } : { top: pos.top }),
                     transformOrigin: pos.up ? "bottom center" : "top center",
                   }}
-                  className="glass-strong z-[200] max-h-[300px] overflow-y-auto rounded-[12px] p-1 shadow-[0_18px_50px_-12px_rgba(0,0,0,0.6)]"
+                  className="glass-popover z-[200] max-h-[300px] overflow-y-auto rounded-[12px] p-1"
                 >
                   {options.length === 0 ? (
                     <div className="px-3 py-2.5 text-[12px] text-t3">Nothing to choose from yet</div>

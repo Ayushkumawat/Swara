@@ -207,6 +207,25 @@
     -webkit-backdrop-filter: blur(30px);
   }
 
+  /*
+   * Floating surfaces: dropdown lists, the notification pane, the profile
+   * menu, the palette, Swara's drawer. These sit over arbitrary content,
+   * so a 7%-white tint is not enough — text behind them bleeds through and
+   * the panel reads as "a transparent box". A near-opaque panel colour does
+   * the work; the blur is a finish, not the mechanism. (Blur also fails
+   * silently when the popover is nested inside another backdrop-filter
+   * element such as the sticky header, which is why those are portalled.)
+   */
+  .glass-popover {
+    background: rgb(18 24 40 / 0.94);
+    border: 1px solid rgb(255 255 255 / 0.11);
+    box-shadow:
+      0 24px 64px -16px rgb(0 0 0 / 0.75),
+      0 0 0 1px rgb(0 0 0 / 0.35) inset;
+    backdrop-filter: blur(28px) saturate(140%);
+    -webkit-backdrop-filter: blur(28px) saturate(140%);
+  }
+
   .skeleton {
     background: linear-gradient(
       90deg,

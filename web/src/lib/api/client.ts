@@ -251,6 +251,15 @@ export const mutations = {
   signup: (orgName: string, name: string, email: string, password: string) =>
     apiSend("POST", "/auth/signup", { orgName, name, email, password }, z.object({ user: SessionUserSchema })),
   logout: () => apiSend("POST", "/auth/logout", {}, z.object({ ok: z.boolean() })),
+  /** Every call, ticket, customer and booking in the org — agents untouched. */
+  eraseCallHistory: () =>
+    apiSend("POST", "/account/erase-calls", {}, z.object({ ok: z.boolean(), calls: z.number().optional(), complaints: z.number().optional() })),
+  /** Back to a freshly provisioned workspace: agents, knowledge, setup gone. */
+  resetWorkspace: () =>
+    apiSend("POST", "/account/reset-workspace", {}, z.object({ ok: z.boolean(), agents: z.number().optional(), calls: z.number().optional() })),
+  /** Deletes the signed-in user; the whole org if they were its only member. */
+  deleteAccount: () =>
+    apiSend("DELETE", "/account", {}, z.object({ ok: z.boolean(), orgDeleted: z.boolean().optional() })),
   updateAction: (id: string, status: "open" | "in_progress" | "done") =>
     apiSend("PATCH", `/actions/${id}`, { status }, z.object({ ok: z.boolean(), id: z.string(), status: z.string() }).or(z.object({ status: z.string() }))),
   payInvoice: (invoiceId: string) =>

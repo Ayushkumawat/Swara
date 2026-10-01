@@ -40,12 +40,14 @@ export default function VoiceStudioPage() {
   const [filter, setFilter] = useState<Filter>("all");
 
   // One preview at a time, page-wide: a real Live session with the mic off.
-  const [previewId, setPreviewId] = useState<string | null>(null);
-  const preview = useLiveSession({ onEnded: () => setPreviewId(null) });
+  const [requestedId, setRequestedId] = useState<string | null>(null);
+  const preview = useLiveSession({ onEnded: () => setRequestedId(null) });
+  // A card only counts as playing while the session is actually alive, so a
+  // session that closes on its own needs no state sync here.
+  const sessionAlive = preview.status !== "closed" && preview.status !== "error";
+  const previewId = sessionAlive ? requestedId : null;
+  const setPreviewId = setRequestedId;
 
-  useEffect(() => {
-    if (preview.status === "closed" || preview.status === "error") setPreviewId(null);
-  }, [preview.status]);
   useEffect(() => {
     if (preview.error) toast.error(preview.error);
   }, [preview.error]);

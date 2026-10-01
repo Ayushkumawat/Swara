@@ -7,6 +7,7 @@ import { finishCall } from "@/lib/server/pipeline";
 import { executeTool } from "@/lib/server/tools";
 import { ingestKnowledgeDoc } from "@/lib/server/ai";
 import * as ws from "@/lib/server/workspace";
+import * as housekeeping from "@/lib/server/housekeeping";
 import { applyPlan, planAgents } from "@/lib/server/planner";
 import { runSwaraChat } from "@/lib/server/swara-chat";
 import { AgentPlanSchema, UseCaseSchema } from "@/lib/api/schemas";
@@ -285,6 +286,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
   if (key === "auth/logout") {
     await logout();
     return json({ ok: true });
+  }
+
+  // Housekeeping from the profile menu. Org-wide wipes need an owner or
+  // admin; a typed confirmation is enforced client-side, the role here.
+  if (key === "account/erase-calls" || key === "account/reset-workspace") {
+    const me = await currentUser();
+    if (!me) return json({ error: "Not signed in" }, 401);
+    if (!["owner", "admin"].includes(me.role)) return json({ error: "Only an owner or admin can do this" }, 403);
+    const result =
+      key === "account/erase-calls"
+        ? housekeeping.eraseCallHistory(me.orgId, me.id)
+        : housekeeping.resetWorkspace(me.orgId, me.id);
+    return json({ ok: true, ...result });
   }
 
   // Live-call support routes. These fall back to the demo org when no session
@@ -576,6 +590,13 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ path: s
   const { path } = await ctx.params;
   const user = await currentUser();
   if (!user) return json({ error: "Not signed in" }, 401);
+
+  if (path[0] === "account" && path.length === 1) {
+    const result = housekeeping.deleteAccount(user.id);
+    if (!result.ok) return json({ error: result.error }, 400);
+    await logout();
+    return json({ ok: true, orgDeleted: result.orgDeleted });
+  }
 
   if (path[0] === "departments" && path[1]) {
     const result = ws.deleteDepartment(user.orgId, path[1]);

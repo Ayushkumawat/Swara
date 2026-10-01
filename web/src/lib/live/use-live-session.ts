@@ -18,6 +18,9 @@ import {
 const TOOL_LABEL: Record<string, string> = {
   lookup_order: "Looking up order",
   register_complaint: "Registering complaint",
+  lookup_ticket: "Looking up ticket",
+  notify_stakeholder: "Notifying the team",
+  resolve_ticket: "Closing ticket",
   book_slot: "Booking slot",
   search_knowledge: "Searching knowledge base",
   transfer_to_human: "Transferring to a person",
@@ -30,6 +33,9 @@ const TOOL_LABEL: Record<string, string> = {
   add_appointment_type: "Adding appointment type",
   add_knowledge: "Saving knowledge",
   propose_agents: "Drafting your agents",
+  list_agents: "Looking at your agents",
+  get_agent: "Reading the agent",
+  update_agent: "Updating the agent",
 };
 
 export type ToolEvent = { id: number; name: string; label: string; result: Record<string, unknown>; at: number };
@@ -74,6 +80,8 @@ export function useLiveSession(handlers: LiveSessionHandlers = {}) {
     if (sessionRef.current) await sessionRef.current.stop();
 
     setTranscript([]);
+    setStatus("connecting");
+    setStatusDetail(null);
     setError(null);
     setHasMic(true);
     setTotalTokens(0);

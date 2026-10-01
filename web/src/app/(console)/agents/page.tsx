@@ -74,7 +74,7 @@ export default function AgentsPage() {
   const agentsQuery = useAgents();
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("flow");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [chosenId, setChosenId] = useState<string | null>(null);
   const openSwara = useUi((s) => s.openSwara);
   const setSwaraContext = useUi((s) => s.setSwaraContext);
   const pendingAgentSelect = useUi((s) => s.pendingAgentSelect);
@@ -83,25 +83,25 @@ export default function AgentsPage() {
   const [gallery, setGallery] = useState(false);
   const [deleting, setDeleting] = useState<Agent | null>(null);
 
+  // Swara just created agents (from here or another screen): land on the
+  // first one until the owner picks something else. Derived, not synced.
+  const selectedId = pendingAgentSelect ?? chosenId;
   const selected = useMemo(() => {
     const list = agentsQuery.data ?? [];
     return list.find((a) => a.id === selectedId) ?? list[0] ?? null;
   }, [agentsQuery.data, selectedId]);
 
-  // Swara created agents (from here or another screen): land on the first.
-  useEffect(() => {
-    if (!pendingAgentSelect) return;
-    if (agentsQuery.data?.some((a) => a.id === pendingAgentSelect)) {
-      setSelectedId(pendingAgentSelect);
-      setPendingAgentSelect(null);
-    }
-  }, [pendingAgentSelect, agentsQuery.data, setPendingAgentSelect]);
+  const setSelectedId = (id: string | null) => {
+    setChosenId(id);
+    if (pendingAgentSelect) setPendingAgentSelect(null);
+  };
 
   // "This agent" in Swara's drawer means the one open here.
   useEffect(() => {
     setSwaraContext(selected ? { agentId: selected.id, agentName: selected.name } : {});
     return () => setSwaraContext({});
   }, [selected, setSwaraContext]);
+  useEffect(() => () => setPendingAgentSelect(null), [setPendingAgentSelect]);
 
   const refresh = () => void qc.invalidateQueries({ queryKey: qk.agents });
 

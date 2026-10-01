@@ -48,7 +48,7 @@ export function VolumeBars({
                 <motion.div
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="glass-strong absolute -top-1 left-1/2 z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 text-center whitespace-nowrap"
+                  className="glass-popover absolute -top-1 left-1/2 z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 text-center whitespace-nowrap"
                 >
                   <div className="font-[family-name:var(--font-mono)] text-[11px] text-t1">
                     {total.toLocaleString("en-IN")} calls
@@ -151,7 +151,7 @@ export function TrendArea({
     <div className="relative" style={{ height }}>
       {active ? (
         <div
-          className="glass-strong pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 whitespace-nowrap"
+          className="glass-popover pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 whitespace-nowrap"
           style={{ left: `${active.x}%`, top: `${(active.y / H) * 100}%` }}
         >
           <div className="font-[family-name:var(--font-mono)] text-[11px] text-t1">
@@ -271,7 +271,7 @@ export function StackedCostBars({
               <motion.div
                 initial={{ opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="glass-strong absolute -top-1 left-1/2 z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 text-center whitespace-nowrap"
+                className="glass-popover absolute -top-1 left-1/2 z-20 -translate-x-1/2 -translate-y-full rounded-lg px-2.5 py-1.5 text-center whitespace-nowrap"
               >
                 <div className="font-[family-name:var(--font-mono)] text-[11px] text-t1">
                   ₹{(d.ai + d.telephony).toFixed(2)}/min

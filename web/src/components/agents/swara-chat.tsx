@@ -69,11 +69,15 @@ export function SwaraChat({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
+  // A new seed while mounted (the drawer is open and another screen asks
+  // Swara something) replaces the draft; adjusted during render, not synced.
+  const [lastSeed, setLastSeed] = useState(seed);
+  if (seed !== lastSeed) {
+    setLastSeed(seed);
+    if (seed) setDraft(seed);
+  }
   useEffect(() => {
-    if (seed) {
-      setDraft(seed);
-      inputRef.current?.focus();
-    }
+    if (seed) inputRef.current?.focus();
   }, [seed]);
 
   useEffect(() => {

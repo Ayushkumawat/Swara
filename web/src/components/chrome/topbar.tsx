@@ -6,22 +6,21 @@ import { Menu, Sparkles, X } from "lucide-react";
 import { navGroupFor, navLabelFor } from "@/lib/nav";
 import { useUi } from "@/lib/ui-store";
 import { useLiveCalls, useMe } from "@/lib/api/hooks";
-import { initialsOf } from "@/lib/utils";
 import { IconButton } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/pill";
 import { NotificationCenter } from "./notifications";
+import { ProfileMenu } from "./profile-menu";
 import { SidebarContent } from "./sidebar";
 
 export function Topbar() {
   const pathname = usePathname();
   const setPalette = useUi((s) => s.setPalette);
-  const openCopilot = useUi((s) => s.openCopilot);
+  const openSwara = useUi((s) => s.openSwara);
   const mobileNavOpen = useUi((s) => s.mobileNavOpen);
   const setMobileNav = useUi((s) => s.setMobileNav);
   const { data: live } = useLiveCalls();
   const { data: me } = useMe();
   const user = me?.user;
-  const roleLabel = user?.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : "";
 
   return (
     <>
@@ -64,21 +63,13 @@ export function Topbar() {
             </div>
           ) : null}
 
-          <IconButton title="Flow copilot" onClick={() => openCopilot()}>
+          <IconButton title="Swara (⌘J)" onClick={() => openSwara()}>
             <Sparkles strokeWidth={1.7} />
           </IconButton>
 
-          <div className="relative">
-            <NotificationCenter />
-          </div>
+          <NotificationCenter />
 
-          <button
-            className="flex size-[34px] items-center justify-center rounded-[10px] font-[family-name:var(--font-display)] text-xs font-semibold text-[#1a0e08]"
-            style={{ background: "linear-gradient(135deg, var(--color-amber), var(--color-coral))" }}
-            title={user ? `${user.name}${roleLabel ? ` · ${roleLabel}` : ""}` : "Account"}
-          >
-            {user ? initialsOf(user.name) : "·"}
-          </button>
+          <ProfileMenu user={user} />
         </div>
       </header>
 
