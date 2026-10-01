@@ -19,7 +19,10 @@ const SYSTEM = [
 
 export type SwaraTurn = { role: "user" | "model"; text: string };
 
-export async function runSwaraChat(orgId: string, messages: SwaraTurn[]) {
+/** Where the owner is in the console, so "this agent" means something. */
+export type SwaraContext = { agentId?: string; agentName?: string; page?: string };
+
+export async function runSwaraChat(orgId: string, messages: SwaraTurn[], context: SwaraContext = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("Swara needs a Gemini API key. Nothing in the workspace was changed.");
@@ -28,7 +31,7 @@ export async function runSwaraChat(orgId: string, messages: SwaraTurn[]) {
   let last = "model unavailable";
   for (const model of TEXT_MODELS) {
     try {
-      return await chatOnce(ai, model, orgId, messages);
+      return await chatOnce(ai, model, orgId, messages, context);
     } catch (error) {
       last = String(error).slice(0, 240);
       console.error(`[swara-chat] ${model} failed:`, last);
@@ -37,20 +40,32 @@ export async function runSwaraChat(orgId: string, messages: SwaraTurn[]) {
   throw new Error("Swara's model is unavailable right now. Your workspace is unchanged — retry.");
 }
 
-async function chatOnce(ai: GoogleGenAI, model: string, orgId: string, messages: SwaraTurn[]) {
+function contextBlock(context: SwaraContext) {
+  const lines: string[] = [];
+  if (context.agentName || context.agentId) {
+    lines.push(
+      `The owner currently has the agent "${context.agentName ?? context.agentId}"${context.agentId ? ` (id ${context.agentId})` : ""} open. "This agent", "it", "her" mean that one unless they name another.`,
+    );
+  }
+  if (context.page) lines.push(`They are on the ${context.page} screen.`);
+  return lines.length ? `WHERE THE OWNER IS\n${lines.join("\n")}` : "";
+}
+
+async function chatOnce(ai: GoogleGenAI, model: string, orgId: string, messages: SwaraTurn[], context: SwaraContext) {
   const contents: Content[] = messages
     .filter((m) => m.text.trim())
     .map((m) => ({ role: m.role, parts: [{ text: m.text }] }));
 
   const tools: { name: string; result: Record<string, unknown> }[] = [];
   let plan: AgentPlan | null = null;
+  const systemInstruction = [SYSTEM, contextBlock(context)].filter(Boolean).join("\n\n");
 
   for (let step = 0; step < 8; step++) {
     const response = await ai.models.generateContent({
       model,
       contents,
       config: {
-        systemInstruction: SYSTEM,
+        systemInstruction,
         tools: [{ functionDeclarations: SETUP_TOOL_DECLARATIONS }],
         temperature: 0.4,
       },

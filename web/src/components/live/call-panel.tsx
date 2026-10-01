@@ -226,9 +226,12 @@ function CallPanelBody({
 function Setup({ voice, onVoice, savedVoice }: { voice: string; onVoice: (v: string) => void; savedVoice?: string }) {
   return (
     <div>
-      <div className="mb-2 text-[11.5px] font-medium text-t2">Voice</div>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {LIVE_VOICES.map((v) => (
+      <div className="mb-2 flex items-baseline justify-between">
+        <span className="text-[11.5px] font-medium text-t2">Voice</span>
+        <span className="text-[10.5px] text-t3">{LIVE_VOICES.length} voices · hear each in Voice studio</span>
+      </div>
+      <div className="grid max-h-[260px] gap-2 overflow-y-auto pr-1 sm:grid-cols-2">
+        {[...LIVE_VOICES].sort((a, b) => Number(b.name === savedVoice) - Number(a.name === savedVoice)).map((v) => (
           <button
             key={v.id}
             onClick={() => onVoice(v.name)}

@@ -9,20 +9,15 @@ import { Pill } from "@/components/ui/pill";
 import { Select } from "@/components/ui/controls";
 import { LIVE_VOICES } from "@/lib/live/config";
 import { IS_MOCK, mutations } from "@/lib/api/client";
-import { usePlaybook } from "@/lib/api/hooks";
 import { INTENT_LABEL, type AgentPlan, type PlannedAgent } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
 
 /**
- * "Build with Swara" — the agent-creation wizard.
- *
- * Brief → plan → (questions) → approve → agents exist. The plan comes from
- * the server's planner (Gemini shaping + deterministic flow construction);
- * this component's job is to make waiting feel like work happening, show the
- * plan as something reviewable, and never create anything before approval.
- *
- * It can be seeded with a plan Swara proposed on a voice call (the
- * propose_agents tool), in which case it opens on the review step.
+ * The plan review. Swara (the drawer) proposes a set of agents through
+ * `propose_agents`; this is where the owner reads it, renames and re-voices
+ * each one, answers her open questions, and approves. Nothing is created
+ * before approval. The plan comes from the server's planner (Gemini shaping
+ * + deterministic flow construction).
  */
 export function BuildWithSwara({
   open,
@@ -33,58 +28,53 @@ export function BuildWithSwara({
   open: boolean;
   onClose: () => void;
   onCreated: (ids: string[]) => void;
-  seedPlan?: AgentPlan | null;
+  seedPlan: AgentPlan | null;
 }) {
-  const playbook = usePlaybook();
-  const [step, setStep] = useState<"brief" | "planning" | "review" | "building" | "done">("brief");
-  const [brief, setBrief] = useState("");
-  const [plan, setPlan] = useState<AgentPlan | null>(null);
+  const [step, setStep] = useState<"planning" | "review" | "building" | "done">("review");
+  const [plan, setPlan] = useState<AgentPlan | null>(seedPlan);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [built, setBuilt] = useState<string[]>([]);
   const [builtIds, setBuiltIds] = useState<string[]>([]);
 
-  // Seed from a plan Swara produced on a voice call, or from the playbook, on
-  // open. Done as a render-phase transition (compare-and-set), not an effect.
-  const [seenOpen, setSeenOpen] = useState<{ open: boolean; seed: AgentPlan | null | undefined }>({ open: false, seed: null });
-  if (open !== seenOpen.open || seedPlan !== seenOpen.seed) {
-    setSeenOpen({ open, seed: seedPlan });
-    if (open) {
-      if (seedPlan) {
-        setPlan(seedPlan);
-        setSelected(Object.fromEntries(seedPlan.agents.map((a) => [a.key, true])));
-        setStep("review");
-      } else if (!brief && playbook.data?.businessType) {
-        setBrief(playbook.data.businessType);
-      }
+  // Take the new plan on open. A render-phase compare-and-set, not an effect.
+  const [seen, setSeen] = useState<{ open: boolean; seed: AgentPlan | null }>({ open: false, seed: null });
+  if (open !== seen.open || seedPlan !== seen.seed) {
+    setSeen({ open, seed: seedPlan });
+    if (open && seedPlan) {
+      setPlan(seedPlan);
+      setSelected(Object.fromEntries(seedPlan.agents.map((a) => [a.key, true])));
+      setAnswers({});
+      setBuilt([]);
+      setBuiltIds([]);
+      setStep("review");
     }
   }
 
   const reset = () => {
-    setStep("brief");
-    setPlan(null);
     setAnswers({});
     setBuilt([]);
     setBuiltIds([]);
+    setStep("review");
   };
 
+  /** Re-plan from the same brief — after answers, or when the first attempt was poor. */
   const runPlan = async (extraAnswers?: Record<string, string>) => {
     const kept = plan;
+    if (!kept) return;
     setStep("planning");
     try {
       const next = IS_MOCK
-        ? mockPlan(brief)
-        : await mutations.planAgents({ brief, answers: extraAnswers ?? answers });
+        ? kept
+        : await mutations.planAgents({ brief: kept.brief, answers: extraAnswers ?? answers });
       setPlan(next);
       setSelected(Object.fromEntries(next.agents.map((a) => [a.key, true])));
       setStep("review");
     } catch (error) {
       toast.error("Planning failed — nothing was replaced", {
-        description: kept
-          ? "Your current plan is still here. Retry when the model responds."
-          : errorText(error),
+        description: `Your current plan is still here. ${errorText(error)}`,
       });
-      setStep(kept ? "review" : "brief");
+      setStep("review");
     }
   };
 
@@ -143,17 +133,16 @@ export function BuildWithSwara({
             transition={{ type: "spring", stiffness: 320, damping: 30 }}
             className="glass-strong fixed left-1/2 top-1/2 z-[90] flex max-h-[90vh] w-[min(920px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[22px] border border-hairline"
             role="dialog"
-            aria-label="Build with Swara"
+            aria-label="Swara's plan"
           >
             <header className="flex items-start justify-between gap-3 border-b border-hairline p-4">
               <div className="flex items-center gap-3">
                 <SwaraOrb active={step === "planning" || step === "building"} />
                 <div>
                   <div className="font-[family-name:var(--font-display)] text-[15px] font-semibold text-t1">
-                    Build with Swara
+                    Swara&apos;s plan
                   </div>
                   <p className="mt-0.5 text-[11.5px] text-t3">
-                    {step === "brief" && "Describe the business and its calls. Swara designs the agents."}
                     {step === "planning" && "Reading your workspace, deciding which agents you need…"}
                     {step === "review" && "Review the plan. Nothing is created until you approve."}
                     {step === "building" && "Creating agents and wiring their flows…"}
@@ -168,35 +157,6 @@ export function BuildWithSwara({
 
             <div className="flex-1 overflow-y-auto p-5">
               <AnimatePresence mode="wait">
-                {step === "brief" ? (
-                  <motion.div key="brief" {...fade} className="space-y-4">
-                    <textarea
-                      value={brief}
-                      onChange={(e) => setBrief(e.target.value)}
-                      rows={6}
-                      autoFocus
-                      className="glass w-full resize-y rounded-[16px] p-4 text-[13px] leading-relaxed text-t1 outline-none focus:border-cyan/40"
-                      placeholder="e.g. We're a D2C skincare brand shipping 400 COD orders a day. Callers ask where their order is, want to return something, or complain about damaged items. We also want to call customers whose delivery failed and remind COD customers before delivery. Two people in support can take escalations."
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      {EXAMPLES.map((ex) => (
-                        <button
-                          key={ex.label}
-                          onClick={() => setBrief(ex.text)}
-                          className="rounded-full border border-hairline bg-white/[0.03] px-3 py-1 text-[11.5px] text-t2 transition-colors hover:border-cyan/30 hover:text-t1"
-                        >
-                          {ex.label}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="text-[11.5px] leading-relaxed text-t3">
-                      Swara already knows what&apos;s in Workspace setup — departments, transfer desks, bookable types,
-                      knowledge. She&apos;ll design around it, list what&apos;s still missing, and ask at most three
-                      questions.
-                    </p>
-                  </motion.div>
-                ) : null}
-
                 {step === "planning" ? (
                   <motion.div key="planning" {...fade}>
                     <Thinking />
@@ -344,16 +304,10 @@ export function BuildWithSwara({
                 {step === "review" && plan ? `${chosenCount} of ${plan.agents.length} selected` : ""}
               </div>
               <div className="flex gap-2">
-                {step === "brief" ? (
-                  <Button variant="primary" onClick={() => void runPlan()} disabled={brief.trim().length < 12}>
-                    <Sparkles className="size-3.5" />
-                    Design my agents
-                  </Button>
-                ) : null}
                 {step === "review" ? (
                   <>
-                    <Button variant="subtle" onClick={reset}>
-                      Start over
+                    <Button variant="subtle" onClick={onClose}>
+                      Not now
                     </Button>
                     <Button variant="primary" onClick={() => void build()} disabled={chosenCount === 0}>
                       Create {chosenCount} agent{chosenCount === 1 ? "" : "s"}
@@ -387,21 +341,6 @@ const fade = {
   exit: { opacity: 0, y: -6 },
   transition: { duration: 0.22 },
 };
-
-const EXAMPLES = [
-  {
-    label: "Dental clinic",
-    text: "Dental clinic with two doctors in Pune. Callers want to book, reschedule or cancel appointments, ask fees and timings. Consultations are 30 minutes, 10am–7pm Mon–Sat. Receptionist Neha can take urgent calls. We'd like reminder calls the day before.",
-  },
-  {
-    label: "D2C e-commerce",
-    text: "D2C skincare brand shipping ~400 orders a day, half COD. Callers ask where their order is, want returns or refunds, complain about damaged items. We want outbound calls for failed deliveries and COD confirmation. Support lead Rahul handles disputes.",
-  },
-  {
-    label: "Customer care + sales",
-    text: "Broadband provider. Inbound: outages, billing disputes, plan changes, complaints. Outbound: follow up on website leads and book installation slots. Separate billing and technical teams; a floor manager can take escalations 9–9.",
-  },
-];
 
 function PlannedAgentCard({
   agent,
@@ -559,26 +498,4 @@ function errorText(error: unknown) {
     /* body was plain text */
   }
   return raw || "The model did not respond.";
-}
-
-/** Mock-mode plan so the wizard demos without a backend. */
-function mockPlan(brief: string): AgentPlan {
-  const mk = (key: string, name: string, job: string, intent: PlannedAgent["intent"], direction: PlannedAgent["direction"], handsOffTo: string[] = [], isFrontDoor = false): PlannedAgent => ({
-    key, name, job, intent, direction, handsOffTo, isFrontDoor, needs: [], prompt: job, tools: [], knowledge: "", personaName: "Riya", voice: "Kore",
-    nodes: [
-      { id: `${key}_s`, kind: "start", title: "Greet", x: 40, y: 40, config: {} },
-      { id: `${key}_i`, kind: "intent", title: "What do they need?", x: 300, y: 40, config: {} },
-      { id: `${key}_e`, kind: "end", title: "Close and hang up", x: 560, y: 40, config: { hangUp: true } },
-    ],
-    edges: [
-      { id: `${key}_e1`, from: `${key}_s`, to: `${key}_i`, tone: "default" },
-      { id: `${key}_e2`, from: `${key}_i`, to: `${key}_e`, tone: "success" },
-    ],
-  });
-  const agents = [
-    mk("front", "Front door", "Greets, works out what the caller needs, hands off.", "other", "inbound", ["order", "complaints"], true),
-    mk("order", "Order status", "Looks up the order and says where it is.", "order_status", "inbound", ["complaints"]),
-    mk("complaints", "Complaints & refunds", "Registers complaints, reads back a reference number.", "complaint", "inbound"),
-  ];
-  return { brief, summary: "Three agents: a front door that routes, order status, and complaints.", questions: [], gaps: [], agents, source: "heuristic" };
 }

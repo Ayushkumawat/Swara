@@ -53,7 +53,7 @@ from .prompts import AGENT_PROMPTS, language_directive
 
 # ── Session parameters. Mirror of web/src/lib/live/config.ts ────────────────
 
-MODEL = "gemini-3.1-flash-live-preview"
+MODEL = "gemini-3.8-live"
 
 # Session resumption and the newer native-audio switches are only served on
 # v1alpha. v1beta connects fine but silently omits resumption updates, which
@@ -106,15 +106,9 @@ def build_config(
             automatic_activity_detection=VAD_CONFIG
         ),
         context_window_compression=COMPRESSION_CONFIG,
-        # Lowest latency. A phone caller forgives a simpler answer far more
-        # readily than a pause.
+        # No thinking_config: gemini-3.8-live removed thinking_level in favour
+        # of interleaved reasoning and rejects it in the setup message.
         #
-        # Nested under thinking_config, not a top-level thinking_level — the
-        # latter is rejected here and silently ignored by the JS SDK, so the
-        # model runs at its default while the code claims otherwise.
-        thinking_config=types.ThinkingConfig(
-            thinking_level=types.ThinkingLevel.MINIMAL
-        ),
         # Empty config asks the server to start issuing handles; a handle means
         # "restore that conversation".
         session_resumption=types.SessionResumptionConfig(handle=resume_handle),

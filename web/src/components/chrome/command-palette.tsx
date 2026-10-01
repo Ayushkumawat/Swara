@@ -29,7 +29,7 @@ export function CommandPalette() {
   const router = useRouter();
   const open = useUi((s) => s.paletteOpen);
   const setPalette = useUi((s) => s.setPalette);
-  const openCopilot = useUi((s) => s.openCopilot);
+  const openSwara = useUi((s) => s.openSwara);
   const [search, setSearch] = useState("");
 
   const { data: agents } = useAgents();
@@ -74,7 +74,7 @@ export function CommandPalette() {
           >
             <Command
               loop
-              className="glass-strong overflow-hidden rounded-[18px] shadow-[0_32px_80px_-20px_rgba(0,0,0,0.8)]"
+              className="glass-popover overflow-hidden rounded-[18px]"
             >
               <div className="flex items-center gap-2.5 border-b border-hairline px-4">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="size-4 text-t3">
@@ -101,10 +101,10 @@ export function CommandPalette() {
                   <Item
                     onSelect={() => {
                       close();
-                      openCopilot();
+                      openSwara();
                     }}
                     icon="✦"
-                    label="Ask the copilot to edit a flow"
+                    label="Ask Swara — set up, build or change an agent"
                     hint="AI"
                   />
                   <Item

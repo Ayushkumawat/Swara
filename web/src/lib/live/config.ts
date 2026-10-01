@@ -14,10 +14,11 @@
  */
 
 import {
+  Behavior,
   type FunctionDeclaration,
+  FunctionResponseScheduling,
   type LiveConnectConfig,
   Modality,
-  ThinkingLevel,
   Type,
 } from "@google/genai";
 import { DEFAULT_VOICE, VOICE_CATALOG, type VoiceCatalogEntry } from "./voices";
@@ -25,8 +26,19 @@ import { DEFAULT_VOICE, VOICE_CATALOG, type VoiceCatalogEntry } from "./voices";
 export { DEFAULT_VOICE, VOICE_CATALOG };
 export type { VoiceCatalogEntry };
 
-/** Native-audio dialogue model. Audio in, audio out, no cascade. */
-export const LIVE_MODEL = "gemini-3.1-flash-live-preview";
+/**
+ * Native-audio dialogue model. Audio in, audio out, no cascade.
+ *
+ * 3.8 Live over 3.1 Flash Live, for a calling agent specifically:
+ *  - function calls are asynchronous by default, so a lookup no longer
+ *    freezes the conversation (see `ASYNC_TOOLS` below);
+ *  - 128k context, so long grievance calls compress later and forget less;
+ *  - proactive audio is always on: the model may choose not to answer audio
+ *    that is not directed at it (TV in the background, a side conversation);
+ *  - `thinking_level` and `enable_affective_dialog` are gone from the API —
+ *    reasoning is interleaved, and tone adaptation is prompt-level.
+ */
+export const LIVE_MODEL = "gemini-3.8-live";
 
 /**
  * Ephemeral tokens are only served on v1alpha, and the version has to match on
@@ -55,13 +67,10 @@ export const LIVE_VOICES: LiveVoice[] = VOICE_CATALOG;
  * - `prefixPaddingMs` at 20 ms would clip the first syllable, which is exactly
  *   where "haan" and "nahi" live, so we look back further.
  * - `silenceDurationMs` buys tolerance for thinking pauses at the cost of
- *   response latency. 700 ms is the point where the agent still feels prompt
- *   but stops interrupting.
- *
- * Known server-side issue: gemini-3.1-flash-live-preview currently ignores
- * `silenceDurationMs` and ends turns at roughly 2 s regardless
- * (googleapis/js-genai#1467). We still send it so the behaviour arrives for
- * free when that is fixed, and so the 2.5 fallback model honours it.
+ *   response latency. Google's own guidance is 500–800 ms: below ~200 ms
+ *   breathing pauses fragment the caller's sentence, above ~2 s the caller
+ *   feels lag. 700 ms is where the agent still feels prompt but stops
+ *   interrupting Hinglish code-switchers.
  */
 export const VAD_CONFIG = {
   disabled: false,
@@ -89,35 +98,53 @@ export const COMPRESSION_CONFIG = {
   slidingWindow: { targetTokens: "16000" },
 } as const;
 
-/**
- * Thinking depth. `MINIMAL` is the default and the right one here: on a phone
- * call, a thoughtful answer that arrives 800 ms late is worse than a decent one
- * that arrives now. Raise this only for agents doing real reasoning mid-call.
- *
- * Note this is nested under `thinkingConfig`, not set at the top level of the
- * session config. A stray top-level `thinkingLevel` type-checks in some
- * positions and is then dropped on the wire, so the model quietly runs at its
- * default while the code claims otherwise.
- */
-export const THINKING_CONFIG = { thinkingLevel: ThinkingLevel.MINIMAL } as const;
-
 /** How long a minted token stays valid, and how long the holder has to open a
  *  session with it. Short windows are the entire point of ephemeral tokens. */
 export const TOKEN_TTL_MS = 30 * 60 * 1000;
 export const TOKEN_SESSION_START_TTL_MS = 2 * 60 * 1000;
 
 /**
+ * Tools that run in the background while the agent keeps talking.
+ *
+ * On 3.1 every tool call blocked: the agent went silent until the order
+ * system answered. On 3.8 a `NON_BLOCKING` declaration lets the model say
+ * "ek second, dekhti hoon" and carry on; the result is folded in according
+ * to the scheduling the client attaches to the response (`WHEN_IDLE` — wait
+ * for the caller to stop talking, which is right for every lookup here).
+ *
+ * The three control tools stay blocking on purpose. `end_call` and
+ * `handoff_to_agent` change what happens at the end of the turn, and
+ * `transfer_to_human` dials a desk; none of them should be racing audio.
+ */
+export const ASYNC_TOOLS = new Set([
+  "lookup_order",
+  "register_complaint",
+  "lookup_ticket",
+  "notify_stakeholder",
+  "resolve_ticket",
+  "book_slot",
+  "search_knowledge",
+]);
+
+/** Scheduling attached to a NON_BLOCKING tool's response. Ignored for the rest. */
+export const ASYNC_TOOL_SCHEDULING = FunctionResponseScheduling.WHEN_IDLE;
+
+export function isAsyncTool(name: string | undefined) {
+  return name != null && ASYNC_TOOLS.has(name);
+}
+
+/**
  * Function declarations the model can call mid-conversation.
  *
  * Declarations live here — shared config, baked into the token constraints —
- * but execution is server-side only (`lib/server/tools.ts`). The model pauses,
- * emits a toolCall over the socket, the client ferries it to POST
+ * but execution is server-side only (`lib/server/tools.ts`). The model emits a
+ * toolCall over the socket, the client ferries it to POST
  * /api/v1/tools/execute, and the JSON result goes back over the socket for the
  * model to speak from. The browser never resolves a tool itself: a tool
  * answered client-side would let anyone with devtools file complaints or read
  * orders as someone else.
  */
-export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
+const DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "lookup_order",
     description:
@@ -277,6 +304,10 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = [
   },
 ];
 
+export const TOOL_DECLARATIONS: FunctionDeclaration[] = DECLARATIONS.map((d) =>
+  isAsyncTool(d.name) ? { ...d, behavior: Behavior.NON_BLOCKING } : d,
+);
+
 /**
  * Tools only the Swara setup assistant carries. They write workspace rows —
  * departments, transfer desks, appointment types, knowledge, the agent plan —
@@ -387,13 +418,56 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
               hands_off_to: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Names of other agents in this plan" },
               is_front_door: { type: Type.BOOLEAN, description: "Answers the main number and routes" },
               persona_name: { type: Type.STRING, description: "The first name this agent uses on the call, if the owner chose one" },
-              voice: { type: Type.STRING, description: "Orus (male, warm), Kore (female, crisp), Puck (male, bright), Charon (male, calm), Aoede (female, soft) — if the owner has a preference" },
+              voice: {
+                type: Type.STRING,
+                description: `If the owner has a preference. One of: ${VOICE_CATALOG.map((v) => `${v.name} (${v.gender}, ${v.descriptor})`).join(", ")}`,
+              },
             },
             required: ["name", "job", "intent", "direction"],
           },
         },
       },
       required: ["brief", "agents"],
+    },
+  },
+  // ── Editing agents that already exist ────────────────────────────────────
+  {
+    name: "list_agents",
+    description: "The agents this workspace already has: id, name, job, status, voice, persona name. Call before editing so you change the right one.",
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: "get_agent",
+    description: "Read one agent in full — its role text, tools, voice, persona name and flow steps — before proposing a change to it.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agent: { type: Type.STRING, description: "Agent id or exact name" },
+      },
+      required: ["agent"],
+    },
+  },
+  {
+    name: "update_agent",
+    description:
+      "Change an existing agent. Send only the fields that change. For the role, send the complete new role text (read it with get_agent first, then rewrite with the owner's change folded in — keep it short and job-specific, use {name} where the agent says its own name). Takes effect on the next call.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agent: { type: Type.STRING, description: "Agent id or exact name" },
+        name: { type: Type.STRING, description: "New display name for the agent" },
+        role: { type: Type.STRING, description: "Complete new role text" },
+        persona_name: { type: Type.STRING, description: "First name it introduces itself with" },
+        voice: {
+          type: Type.STRING,
+          description: `One of: ${VOICE_CATALOG.map((v) => `${v.name} (${v.gender})`).join(", ")}. Gender must match persona_name.`,
+        },
+        direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
+        status: { type: Type.STRING, enum: ["draft", "testing", "live", "paused"] },
+        add_tools: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tool names to allow, e.g. book_slot, search_knowledge" },
+        remove_tools: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tool names to take away" },
+      },
+      required: ["agent"],
     },
   },
 ];
@@ -425,7 +499,7 @@ export type LiveSessionOptions = {
  * The return type is annotated rather than inferred, and that is load-bearing:
  * TypeScript only rejects unknown properties on a *fresh* object literal, so an
  * inferred return lets a misspelled or misplaced field pass the build and get
- * dropped on the wire. That is how a top-level `thinkingLevel` sat here looking
+ * dropped on the wire. That is how a misplaced field once sat here looking
  * correct while the model ran at its default.
  */
 export function buildLiveConfig({
@@ -438,6 +512,7 @@ export function buildLiveConfig({
   const callTools = toolNames
     ? TOOL_DECLARATIONS.filter((t) => t.name != null && toolNames.includes(t.name))
     : TOOL_DECLARATIONS;
+  const declarations = [...callTools, ...extraTools];
   return {
     responseModalities: [Modality.AUDIO],
     speechConfig: {
@@ -450,9 +525,12 @@ export function buildLiveConfig({
     inputAudioTranscription: {},
     outputAudioTranscription: {},
     realtimeInputConfig: { automaticActivityDetection: VAD_CONFIG },
-    tools: [{ functionDeclarations: [...callTools, ...extraTools] }],
+    // A voice preview carries no tools at all; an empty declaration list is
+    // not the same thing as no tools block.
+    ...(declarations.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
     contextWindowCompression: COMPRESSION_CONFIG,
-    thinkingConfig: THINKING_CONFIG,
+    // No thinkingConfig: 3.8 Live removed `thinking_level` in favour of
+    // interleaved reasoning, and sending it now fails the setup message.
     // Always on. An empty object is the "enabled" signal, which asks the
     // server to start issuing handles; a handle present means "restore that
     // conversation". Enabling it costs nothing when unused, and the 10-minute

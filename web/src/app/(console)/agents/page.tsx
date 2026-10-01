@@ -44,13 +44,10 @@ import {
   useTransfers,
 } from "@/lib/api/hooks";
 import { useUi } from "@/lib/ui-store";
-import { INTENT_LABEL, type Agent, type AgentPlan, type FlowEdge, type FlowNode } from "@/lib/api/schemas";
+import { INTENT_LABEL, type Agent, type FlowEdge, type FlowNode } from "@/lib/api/schemas";
 import { cn, initialsOf, relativeTime } from "@/lib/utils";
 import type { FlowSelection } from "@/components/flow/flow-canvas";
 import { NodeInspector } from "@/components/flow/node-inspector";
-import { BuildWithSwara } from "@/components/agents/build-with-swara";
-import { SwaraChat } from "@/components/agents/swara-chat";
-import { Modal } from "@/components/ui/modal";
 
 // The canvas carries drag handling and per-node SVG; only the Flow builder
 // tab needs it, so it loads when that tab is first opened.
@@ -78,17 +75,33 @@ export default function AgentsPage() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<Tab>("flow");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const openCopilot = useUi((s) => s.openCopilot);
-  const [calling, setCalling] = useState<null | "agent" | "swara">(null);
+  const openSwara = useUi((s) => s.openSwara);
+  const setSwaraContext = useUi((s) => s.setSwaraContext);
+  const pendingAgentSelect = useUi((s) => s.pendingAgentSelect);
+  const setPendingAgentSelect = useUi((s) => s.setPendingAgentSelect);
+  const [calling, setCalling] = useState<null | "agent">(null);
   const [gallery, setGallery] = useState(false);
-  const [building, setBuilding] = useState(false);
-  const [seedPlan, setSeedPlan] = useState<AgentPlan | null>(null);
   const [deleting, setDeleting] = useState<Agent | null>(null);
 
   const selected = useMemo(() => {
     const list = agentsQuery.data ?? [];
     return list.find((a) => a.id === selectedId) ?? list[0] ?? null;
   }, [agentsQuery.data, selectedId]);
+
+  // Swara created agents (from here or another screen): land on the first.
+  useEffect(() => {
+    if (!pendingAgentSelect) return;
+    if (agentsQuery.data?.some((a) => a.id === pendingAgentSelect)) {
+      setSelectedId(pendingAgentSelect);
+      setPendingAgentSelect(null);
+    }
+  }, [pendingAgentSelect, agentsQuery.data, setPendingAgentSelect]);
+
+  // "This agent" in Swara's drawer means the one open here.
+  useEffect(() => {
+    setSwaraContext(selected ? { agentId: selected.id, agentName: selected.name } : {});
+    return () => setSwaraContext({});
+  }, [selected, setSwaraContext]);
 
   const refresh = () => void qc.invalidateQueries({ queryKey: qk.agents });
 
@@ -109,19 +122,15 @@ export default function AgentsPage() {
     <>
       <PageHead
         title="Agents & flows"
-        sub="Build, test, and publish voice agents — let Swara design them, or draw the flow yourself"
+        sub="Build, test, and publish voice agents — let Swara design and change them, or draw the flow yourself"
         actions={
           <>
             <Button variant="ghost" onClick={() => setGallery(true)}>
               Templates
             </Button>
-            <Button variant="ghost" onClick={() => setCalling("swara")} title="Ask Swara — she interviews you and drafts the agents">
+            <Button variant="primary" onClick={() => openSwara()} title="Swara designs new agents from a description and changes existing ones">
               <Sparkles className="size-3.5" />
-              Ask Swara
-            </Button>
-            <Button variant="primary" onClick={() => { setSeedPlan(null); setBuilding(true); }}>
-              <Sparkles className="size-3.5" />
-              Build with Swara
+              Swara
             </Button>
           </>
         }
@@ -147,7 +156,7 @@ export default function AgentsPage() {
                     title="No agents yet"
                     body="Let Swara design them from a description of your business, or start from a template."
                     action={
-                      <Button size="sm" variant="primary" onClick={() => setBuilding(true)}>
+                      <Button size="sm" variant="primary" onClick={() => openSwara()}>
                         <Sparkles className="size-3.5" /> Build with Swara
                       </Button>
                     }
@@ -220,16 +229,18 @@ export default function AgentsPage() {
               </div>
             )}
 
-            <button
-              onClick={() => openCopilot(selected ? `Edit the ${selected.name.toLowerCase()} agent: ` : undefined)}
-              className="glass mt-4 flex w-full items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.08]"
-            >
-              <Sparkles className="size-4 shrink-0 text-cyan" strokeWidth={2} />
-              <span className="min-w-0 flex-1 truncate text-[12.5px] text-t2">
-                Tell the copilot what to change — e.g. &ldquo;confirm spelling of the address before booking&rdquo;
-              </span>
-              <span className="shrink-0 text-[11.5px] font-medium text-cyan">Ask copilot</span>
-            </button>
+            {selected ? (
+              <button
+                onClick={() => openSwara("", { agentId: selected.id, agentName: selected.name })}
+                className="glass mt-4 flex w-full items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left transition-colors hover:bg-white/[0.08]"
+              >
+                <Sparkles className="size-4 shrink-0 text-cyan" strokeWidth={2} />
+                <span className="min-w-0 flex-1 truncate text-[12.5px] text-t2">
+                  Tell Swara what to change in {selected.name} — e.g. &ldquo;confirm the address spelling before booking&rdquo;
+                </span>
+                <span className="shrink-0 text-[11.5px] font-medium text-cyan">Ask Swara</span>
+              </button>
+            ) : null}
           </Card>
         </Reveal>
       </div>
@@ -255,28 +266,6 @@ export default function AgentsPage() {
         />
       ) : null}
 
-      <Modal
-        open={calling === "swara"}
-        onClose={() => setCalling(null)}
-        title="Ask Swara"
-        sub="She writes the workspace as you chat, then proposes agents for you to approve. Phone calls to your agents are unchanged."
-        width={520}
-      >
-        <SwaraChat
-          onSaved={() => {
-            void qc.invalidateQueries({ queryKey: ["setup"] });
-            void qc.invalidateQueries({ queryKey: qk.departments });
-            void qc.invalidateQueries({ queryKey: qk.knowledge });
-          }}
-          onPlan={(plan) => {
-            setSeedPlan(plan);
-            setBuilding(true);
-            setCalling(null);
-            toast("Swara proposed a plan", { description: "Review it and create the agents. A failed retry leaves this plan in place." });
-          }}
-        />
-      </Modal>
-
       {gallery ? (
         <TemplateGallery
           onClose={() => setGallery(false)}
@@ -287,18 +276,6 @@ export default function AgentsPage() {
           }}
         />
       ) : null}
-
-      <BuildWithSwara
-        open={building}
-        seedPlan={seedPlan}
-        onClose={() => setBuilding(false)}
-        onCreated={(ids) => {
-          setBuilding(false);
-          setSeedPlan(null);
-          refresh();
-          if (ids[0]) setSelectedId(ids[0]);
-        }}
-      />
 
       <ConfirmDelete agent={deleting} onCancel={() => setDeleting(null)} onConfirm={() => deleting && void deleteAgent(deleting)} />
     </>
@@ -538,7 +515,7 @@ function FlowTab({ agent, allAgents }: { agent: Agent; allAgents: Agent[] }) {
     latest.current = graph;
   }, [graph]);
 
-  // Server truth wins only when it changes underneath us (e.g. copilot edit),
+  // Server truth wins only when it changes underneath us (e.g. a Swara edit),
   // not on every refetch after our own save.
   const serverSig = JSON.stringify([agent.nodes, agent.edges]);
   const lastServerSig = useRef(serverSig);
@@ -889,13 +866,13 @@ function PromptTab({ agent }: { agent: Agent }) {
       {identityDirty ? <p className="-mt-2 text-[11px] text-amber">Unsaved — Save role writes name and voice too.</p> : null}
       <Field
         label="Agent role"
-        hint="The detailed role Swara writes for this agent: purpose, tone, how they speak, and what they must never do. Language follow, the flow, and the tool list are added on the call."
+        hint="Only what is specific to this job: the opening line, the details it needs, the situations this business sees. Write {name} where the agent says its own name. Phone manners, language follow, the flow and tool rules are added on every call — do not repeat them here."
       >
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          rows={16}
-          placeholder="You handle order status. Get the order ID or registered phone, look it up, lead with the status then the date. Never invent a status."
+          rows={14}
+          placeholder={"ROLE — Order status\nTells callers where their order is. You answer inbound calls.\n\nOpen with \"Hi, {name} here from Fresho — what can I help you with?\" Use the order number if they give one, else look up by their phone. If it is late, say so plainly and offer a reschedule."}
           className="glass w-full resize-y rounded-[14px] p-4 font-[family-name:var(--font-mono)] text-[12.5px] leading-relaxed text-t1 outline-none transition-colors focus:border-cyan/45"
         />
       </Field>
@@ -1071,7 +1048,7 @@ function VersionsTab() {
       {(versions) => (
         <div>
           <p className="mb-3 text-[11.5px] text-t3">
-            Every publish and every copilot edit is a version. Rolling back takes effect on the next call — no redeploy.
+            Every publish and every Swara edit is a version. Rolling back takes effect on the next call — no redeploy.
           </p>
           {versions.map((v) => (
             <ListRow key={v.id}>

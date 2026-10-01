@@ -168,12 +168,11 @@ exactly where "haan" and "nahi" live. `silenceDurationMs` buys tolerance for the
 pauses people make while switching between Hindi and English; too low and the
 agent talks over anyone who thinks mid-sentence.
 
-**Known server-side bug:** `gemini-3.1-flash-live-preview` currently ignores
-`silenceDurationMs` and ends turns at roughly 2 s regardless
-([js-genai#1467](https://github.com/googleapis/js-genai/issues/1467)). We send it
-anyway so the behaviour arrives when fixed. If mid-sentence cutoffs become the
-top complaint before then, the options are `gemini-2.5-flash-native-audio-latest`,
-which honours it, or manual VAD.
+Google's guidance for `silenceDurationMs` is 500–800 ms: under ~200 ms a
+breath fragments the sentence, over ~2 s the caller feels lag. We sit at 700.
+(The 3.1 preview ignored this field and cut turns at ~2 s —
+[js-genai#1467](https://github.com/googleapis/js-genai/issues/1467); `gemini-3.8-live`
+honours it.)
 
 **Manual VAD** is available: set `automaticActivityDetection.disabled` and send
 `activityStart` / `activityEnd` yourself. Relevant for telephony, where the
@@ -216,15 +215,16 @@ connecting. It cannot pick its own model or override the persona.
 
 ---
 
-## Model features we are not using
+## Model features and where we stand (`gemini-3.8-live`)
 
 | Feature | Status | Note |
 |---|---|---|
-| Thinking level | Using `MINIMAL` | Nested under `thinkingConfig`. A stray top-level `thinkingLevel` type-checks in some positions and is silently dropped, so the model runs at its default while the code claims otherwise. Raise it only for agents that reason mid-call. |
-| Function calling | **Next thing to build** | The gap between a demo and a product. Until the agent can look up a real order, it can only take messages. Synchronous only on 3.1 — the model stops until you respond, so a slow tool is dead air. |
+| Thinking level | **Removed from the API** | 3.8 reasons interleaved with speech; `thinkingConfig` is rejected in the setup message. Nothing to tune. |
+| Function calling | Using, async | Lookups (`lookup_order`, `search_knowledge`, `book_slot`, …) are declared `NON_BLOCKING`, so the agent keeps talking while they run; the response carries `scheduling: WHEN_IDLE`. `end_call`, `handoff_to_agent`, `transfer_to_human` stay blocking because they change what happens at the end of the turn. See `ASYNC_TOOLS` in `config.ts`. |
 | Google Search grounding | Available | Not wanted. These agents must answer from our data, not the web. |
-| Proactive audio | **Unsupported on 3.1** | Model chooses not to respond to irrelevant input. Available on 2.5 native-audio with `v1alpha`. |
-| Affective dialogue | **Unsupported on 3.1** | Adapts tone to the caller's emotion. Also 2.5 only. Worth watching — it maps directly onto the sentiment work in the console. |
+| Proactive audio | **Always on** | The model may decline to answer audio not directed at it (TV, a side conversation). There is no switch. |
+| Affective dialogue | Prompt-level | `enable_affective_dialog` is gone from 3.8; tone adaptation is part of the model and steered through the role text. |
+| Voices | 30 prebuilt | All listed in `voices.ts`, each previewable from Voice Studio. No speaking-rate parameter exists; pace is prompt-level. |
 | Video input | Available | No use on a phone call. |
 | Explicit language code | Not available | Native-audio models choose their own language and reject a language code, so multilingual behaviour is prompt-level. See `languageDirective()`. |
 | `usageMetadata` | Using | Real token counts per session. What honest per-minute pricing has to be built on. |

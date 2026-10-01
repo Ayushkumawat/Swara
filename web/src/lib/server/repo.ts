@@ -1033,6 +1033,7 @@ export function updateAgent(orgId: string, id: string, data: {
   name?: string;
   prompt?: string;
   status?: string;
+  direction?: string;
   nodes?: unknown[];
   edges?: unknown[];
   voiceId?: string;
@@ -1043,12 +1044,13 @@ export function updateAgent(orgId: string, id: string, data: {
   const current = db().prepare("SELECT * FROM agents WHERE id=? AND org_id=?").get(id, orgId) as Row | undefined;
   if (!current) return { error: "No such agent" } as const;
   db().prepare(
-    `UPDATE agents SET name=?, prompt=?, status=?, nodes=?, edges=?, voice_id=?, persona_name=?, tools=?,
+    `UPDATE agents SET name=?, prompt=?, status=?, direction=?, nodes=?, edges=?, voice_id=?, persona_name=?, tools=?,
        mode=?, version=version+1, updated_at=? WHERE id=? AND org_id=?`,
   ).run(
     data.name ?? current.name,
     data.prompt ?? current.prompt,
     data.status ?? current.status,
+    data.direction ?? current.direction,
     JSON.stringify(data.nodes ?? JSON.parse(current.nodes as string)),
     JSON.stringify(data.edges ?? JSON.parse(current.edges as string)),
     data.voiceId ?? voiceRowId(orgId, data.voice) ?? current.voice_id,

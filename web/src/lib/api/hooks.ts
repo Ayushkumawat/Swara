@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { endpoints } from "./client";
 
-/** Query keys are flat and stable so the command palette and copilot can
+/** Query keys are flat and stable so the command palette and Swara can
  *  invalidate slices of the cache without knowing who rendered them. */
 export const qk = {
   overview: ["overview"] as const,

@@ -10,21 +10,25 @@ export const AGENT_LANGUAGES = [
   "hi", "en", "hinglish", "ta", "te", "kn", "ml", "mr", "bn", "gu", "pa", "or",
 ] as const;
 
-const TONE: Record<string, string> = {
-  complaint:
-    "Slow and warm. Let them tell the whole story before you ask anything. Acknowledge what happened in one plain line — no 'I understand your frustration' slogan, no cheerfulness. Then ask only what you need to file it. Once it is filed, say what happens next and by when.",
-  order_status:
-    "Plain and quick. They want to know where the thing is. Get the order number or use the number they are calling from, look it up, and say the status and the date in one breath. If it is late, say so plainly and say what you can do. Do not pad.",
-  delivery_reschedule:
-    "Practical and a little sorry, without grovelling. Say what happened in one line, offer two windows, confirm the address, read the slot back once.",
-  booking:
-    "Calm and concrete. Find out what they need booked and roughly when, then offer two real slots. Never ask an open 'when are you free?'. Confirm once.",
-  sales_enquiry:
-    "You are a good salesperson, not a brochure. Ask what they are trying to get done and listen. Ask about their situation before you describe anything — size, timeline, what they use today, who decides. Answer the question they asked, tied to what they told you, in two sentences. No feature dumps, no pressure, no invented price or discount. If it is not a fit, say so. Always leave with one concrete next step they agreed to — a demo, a callback at a named time, or a message with details.",
-  payment_reminder:
-    "Matter-of-fact and brief. Who you are, which order, the amount, when it arrives. Ask if they will be there. Never pressure. A cancellation is accepted without an argument; note it and close.",
-  feedback: "Light and short. One question at a time, let them answer fully. Thank them and stop.",
-  other: "Brief and friendly. Understand what they want first. Do the one job you were given, then hand off or close.",
+/**
+ * Placeholder the role text uses for the agent's own spoken name, so renaming
+ * the persona or switching voice never means rewriting the role.
+ */
+export const NAME_PLACEHOLDER = "{name}";
+
+/**
+ * One line of job colour, used only when the planner did not write a role
+ * (a template, a hand-made agent). A model-written role carries its own.
+ */
+const JOB_HINT: Record<string, string> = {
+  complaint: "Let them tell the whole story first. Acknowledge it in one plain line, file it, then say what happens next and by when.",
+  order_status: "Find the order — number if they gave one, else the number they are calling from — and say the status and date in one breath.",
+  delivery_reschedule: "Say what happened in one line, offer two windows, confirm the address, read the slot back once.",
+  booking: "Find out what and roughly when, then offer two real slots. Never ask an open 'when are you free?'.",
+  sales_enquiry: "Ask about their situation before describing anything. Answer in two sentences tied to what they said. Leave with one agreed next step.",
+  payment_reminder: "Who you are, which order, the amount, when it arrives, will they be there. A cancellation is accepted without argument.",
+  feedback: "One question at a time, let them answer fully, thank them and stop.",
+  other: "Understand what they want first, do the one job you were given, then hand off or close.",
 };
 
 export function toolsForRole(input: {
@@ -72,18 +76,27 @@ export function toolsForRole(input: {
   return [...tools];
 }
 
+/** When to reach for each tool. Only what the model would not know on its own. */
 const TOOL_LINE: Record<string, string> = {
-  lookup_order: "lookup_order — before you state any order status. Use the order number if they gave one, else the phone number they are calling from. Never guess one.",
-  register_complaint: "register_complaint — after you understand what happened and have their name. Leave phone empty; it uses the number they are calling from. You have no reference number until this returns one — then read it back, once. If it returns possible_duplicate, they already have an open ticket for this: tell them its status and ask if it is the same thing before doing anything else.",
-  lookup_ticket: "lookup_ticket — the moment they mention an earlier complaint, ask for status, or quote a number. Call it with no arguments to see every ticket from their phone; never ask them for a reference number first.",
-  notify_stakeholder: "notify_stakeholder — after a ticket exists, to tell the desk that owns it.",
-  book_slot: "book_slot — only after they accept one of the two slots you offered.",
-  search_knowledge: "search_knowledge — before any policy, fee, timing or process answer. If it is not there, say you don't have it.",
-  transfer_to_human: "transfer_to_human — only to a desk named in TRANSFER TARGETS, and only after you say you are connecting them.",
-  handoff_to_agent: "handoff_to_agent — when the caller needs a different agent. One sentence, then the exact agent name.",
-  end_call: "end_call — after the closing line, when they have nothing else.",
+  lookup_order: "lookup_order — before stating any order status. Order number if given, else the caller's phone number.",
+  register_complaint: "register_complaint — once you know what happened and have their name; leave phone empty. You have no reference number until it returns one. If it returns possible_duplicate, tell them the open ticket's status and ask if this is the same thing.",
+  lookup_ticket: "lookup_ticket — the moment they mention an earlier complaint or ask for status. No arguments shows every ticket from their number; never ask them for a reference first.",
+  notify_stakeholder: "notify_stakeholder — to push an existing ticket to the desk that owns it.",
+  book_slot: "book_slot — only after they accept one of the slots you offered.",
+  search_knowledge: "search_knowledge — before any policy, fee, timing or process answer. Not there means you do not have it.",
+  transfer_to_human: "transfer_to_human — only to a desk listed under TRANSFER TARGETS, after telling them you are connecting them.",
+  handoff_to_agent: "handoff_to_agent — when the caller's need belongs to another agent. One sentence, then the exact agent name.",
+  end_call: "end_call — after the goodbye, once they have nothing else.",
 };
 
+/**
+ * The stored role: only what is specific to this agent's job at this
+ * business. Everything true of every phone call — listen first, one question
+ * a turn, tools are the only truth, how to end — is added once at call time
+ * (`CONVERSATION_RULES` in live-prompt.ts), not repeated into every agent.
+ * The model already knows how to be polite; telling it eleven ways makes it
+ * stilted, and contradictory tone blocks make it confused.
+ */
 export function buildRolePrompt(input: {
   name: string;
   job: string;
@@ -91,48 +104,23 @@ export function buildRolePrompt(input: {
   intent: string;
   isFrontDoor: boolean;
   direction: string;
-  canTransfer: boolean;
   tools: string[];
 }): string {
-  const tone = input.isFrontDoor
-    ? "Short. You greet, work out who they need in one or two turns, and hand them over. You do not solve the request yourself and you do not collect details for the next agent."
-    : (TONE[input.intent] ?? TONE.other);
-  const body = (input.role ?? "").trim() || input.job;
-  const never = [
-    "Invent a fact, a price, a slot, a status, or a policy that a tool did not return.",
-    "Ask for name and phone number before you know what the caller wants. Understand first; collect only when you need it to act.",
-    "Ask for anything the caller already told you, or ask two questions in one turn.",
-    "Repeat your last sentence when they did not understand — rephrase it shorter.",
-    "Say \"anything else?\" and \"thank you for calling\" in the same turn. Ask, stop, wait for the answer; the goodbye is its own turn, only after they say no.",
-    "Say a complaint is registered, or speak any reference number, before the register_complaint tool has returned one. No tool result, no number.",
-    "Stay on a job that belongs to another agent — hand it off.",
-    "Ask which language they prefer, or keep speaking a language they have left.",
-  ];
-  if (!input.canTransfer) {
-    never.push(
-      "Offer a transfer, say you are connecting them to a person, or name a colleague. Nobody is available. Say that, and take a name and callback number.",
-    );
-  }
+  const body = (input.role ?? "").trim();
+  const fallback = input.isFrontDoor
+    ? "Greet, work out in a turn or two who the caller needs, and hand them over with handoff_to_agent. You do not solve the request yourself."
+    : (JOB_HINT[input.intent] ?? JOB_HINT.other);
+  const direction =
+    input.direction === "outbound" ? "You make outbound calls." : input.direction === "both" ? "You take and make calls." : "You answer inbound calls.";
+  const job = input.job.trim().replace(/\.?$/, ".");
   return [
     `ROLE — ${input.name}`,
-    `You handle ${input.direction} calls. This is your only job. The name you introduce yourself with is given to you at the top of this instruction — use that one, not any name in the text below.`,
-    body,
+    `${job} ${direction}`,
     "",
-    "TONE",
-    tone,
+    body || fallback,
     "",
-    "HOW YOU SOUND",
-    "You are a person on a phone, not a menu and not a script. Talk the way a good colleague on the desk would.",
-    "Short sentences. Say one thing, then stop and let them respond. A small pause before a number, a date, or a name you are about to read back.",
-    "A light filler now and then — \"ah\", \"um\", \"hmm\", \"ek second\", \"accha\" — when you are looking something up or choosing a word. At most one in a turn. Never stack them. Never while reading a reference number, an amount, or a phone number.",
-    "Vary your acknowledgements. Not the same \"ji\" or \"got it\" twice in a row.",
-    "Do not announce that you are an AI unless they ask. If they ask, say yes in a word and continue.",
-    "",
-    "ACTIONS — these are the only tools you may call",
+    "TOOLS — the only actions you have",
     ...input.tools.map((t) => `- ${TOOL_LINE[t] ?? t}`),
-    "",
-    "NEVER",
-    ...never.map((n) => `- ${n}`),
   ].join("\n");
 }
 

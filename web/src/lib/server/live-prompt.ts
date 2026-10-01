@@ -4,9 +4,9 @@ import { agentPrompt } from "@/lib/live/prompts";
 import { languageDirective } from "@/lib/live/config";
 import { recordingDirective } from "@/lib/live/recording";
 import { lookupTickets, staffCallbackBlock } from "@/lib/server/tickets";
-import { voiceByName, voiceCraft } from "@/lib/live/voices";
+import { VOICE_PREVIEW_AGENT_ID, voiceByName, voiceCraft } from "@/lib/live/voices";
 import { compileFlow } from "@/lib/agents/flow";
-import { defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
+import { NAME_PLACEHOLDER, defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
 import { SWARA_AGENT_ID, SWARA_GREETING, SWARA_PERSONA_NAME, SWARA_SYSTEM_PROMPT, SWARA_TOOL_RULES, SWARA_VOICE } from "@/lib/agents/swara";
 import { appointmentTypes, playbook, transferTargets, voices as orgVoices } from "./workspace";
 import type { FlowEdge, FlowNode } from "@/lib/api/schemas";
@@ -29,6 +29,8 @@ export type ComposedPrompt = {
   tools: string[];
   /** True for the setup assistant: it carries the workspace-writing tools. */
   setupTools: boolean;
+  /** True for a Voice Studio sample: one spoken line, no call row, no consent. */
+  preview?: boolean;
 };
 
 export function composeLivePrompt(
@@ -38,6 +40,7 @@ export function composeLivePrompt(
   extras?: { fromNumber?: string; briefing?: string },
 ): ComposedPrompt {
   if (agentId === SWARA_AGENT_ID) return composeSwara(orgId);
+  if (agentId === VOICE_PREVIEW_AGENT_ID) return composeVoicePreview(orgId, voiceName);
 
   const stored = getDb()
     .prepare(
@@ -60,7 +63,7 @@ export function composeLivePrompt(
     | undefined;
 
   const builtin = agentPrompt(agentId);
-  const role = stored?.prompt || builtin?.systemInstruction || defaultRole(stored?.name ?? "this line");
+  const rawRole = stored?.prompt || builtin?.systemInstruction || defaultRole(stored?.name ?? "this line");
 
   // Who the agent says it is. The owner's choice first; an agent that was
   // simply named after a person ("Aarav") uses that; only then the voice's
@@ -86,6 +89,9 @@ export function composeLivePrompt(
   const voiceBlock = (saved?.promptTemplate || voiceCraft(catalog.name))
     .split(voiceDefaultName)
     .join(persona);
+  // Roles are written with "{name}" where the agent says its own name, so a
+  // rename or a voice change never means rewriting the role.
+  const role = rawRole.split(NAME_PLACEHOLDER).join(persona);
 
   const book = playbook(orgId);
   const transfers = book.extra.humanEscalation === false ? [] : transferTargets(orgId);
@@ -187,7 +193,7 @@ export function composeLivePrompt(
       extras?.briefing ? `OUTBOUND BRIEFING (do this job, then offer to take questions):\n${extras.briefing}` : "",
       extras?.fromNumber ? staffCallbackBlock(orgId, extras.fromNumber) : "",
       extras?.fromNumber ? callerBlock(orgId, extras.fromNumber) : "",
-      `Your name on this call is ${persona}${book.businessType ? `, from ${book.businessType}` : ""}. Introduce yourself as ${persona}, once. If any instruction below uses a different first name, it means you.`,
+      `Your name on this call is ${persona}${book.businessType ? `, from ${book.businessType}` : ""}. Say it once, in your opening line.`,
       voiceBlock,
       role,
       CONVERSATION_RULES,
@@ -202,33 +208,17 @@ export function composeLivePrompt(
 }
 
 /**
- * The difference between an agent and a form. Every stored agent gets this
- * after its role, because the failure the owner hears first is "it kept
- * asking for my name and number and never understood what I wanted".
+ * Everything that is true of every call, said once, here — not in each
+ * agent's role. Short on purpose: the model knows how to hold a
+ * conversation, and the things worth spelling out are the ones a phone
+ * agent gets wrong in ways that cost a customer. Each line earns its place.
  */
 const CONVERSATION_RULES = [
-  "HOW A REAL CALL GOES",
-  "Listen first. Let the caller finish. Your first job is to understand what they want, in their words — not to collect details.",
-  "Answer the thing they actually asked before you ask anything back. If you can act with what you already have, act.",
-  "One question per turn. Never two.",
-  "Never ask for something the caller already told you. If they gave a name, use it. If they gave an order number, use it. Asking again tells them you were not listening.",
-  "Ask for a detail only at the moment you need it, and say why in a few words: \"complaint file karne ke liye aapka naam?\"",
-  "If you did not catch something, say so and ask them to repeat that one thing. Do not repeat your previous sentence word for word, and do not guess.",
-  "Do not re-introduce yourself, do not repeat the recording line, do not restart the greeting mid-call.",
-  "If the caller goes quiet, wait a moment, then ask one short check-in. If they repeat themselves, they think you did not get it — confirm what you understood in one line, then move.",
-  "Reflect back only numbers, spellings and slots — once. Everything else, just carry on.",
-  "",
-  "ENDING THE CALL — two separate turns, always",
-  "When the matter is handled, ask ONE short question: \"aur kuch help chahiye?\" / \"anything else I can do?\" — then STOP TALKING and wait for the answer.",
-  "Only after they say no, or say bye, do you speak the closing line — one warm sentence, then call end_call.",
-  "Never put the question and the goodbye in the same breath. \"Anything else? Thank you for calling\" is the single worst thing you can say: it asks and hangs up on them at once.",
-  "If they say yes or start a new topic, there is no goodbye — you carry on.",
-  "",
-  "TOOLS ARE THE ONLY TRUTH",
-  "You know nothing about tickets, orders, slots or reference numbers except what a tool returned on this call.",
-  "Saying 'I have registered your complaint' or reading out a reference number before register_complaint returned registered:true is lying to the caller. Call the tool first, in silence if you like (\"ek second…\"), then tell them.",
-  "Never invent, round, or 'example' a number. If a tool did not give it, you do not have it.",
-  "If a tool fails or says not found, tell the caller plainly and offer the next honest step — file it now, or have the team call back.",
+  "ON THE CALL",
+  "You are a person on the desk, not a menu. Understand what the caller wants before you collect anything, and never ask for something they already said. One question per turn; ask for a detail at the moment you need it.",
+  "Read back only numbers, spellings and slots, once. If you missed something, ask for that one thing again rather than repeating yourself. Do not re-introduce yourself or restart the greeting mid-call. Do not say you are an AI unless asked; if asked, say yes and carry on.",
+  "Lookups run in the background: say a short \"ek second\" and keep talking naturally; when the result arrives, use it. Nothing about orders, tickets, slots or reference numbers is true until a tool returned it this call — never say a complaint is registered or read a number before then, and never invent, round or 'example' one. If a tool fails or finds nothing, say so plainly and offer the next honest step.",
+  "Ending: when the matter is handled, ask one short \"anything else?\" and wait. Only after they say no do you say goodbye — one sentence, then end_call. Never the question and the goodbye in the same breath.",
 ].join("\n");
 
 /** What we already know about the person on the line, so the agent does not ask for it — including the tickets they already have open. */
@@ -273,15 +263,16 @@ function callerBlock(orgId: string, fromNumber: string) {
 
 /**
  * One line on what a sibling agent does, for the handoff directory. Role
- * prompts built by Swara start with a "ROLE —" header and a "You handle …"
- * line; the first sentence after those is the job. Hand-written prompts use
- * their first sentence.
+ * prompts built by Swara start with a "ROLE —" header followed by the job
+ * line; older ones had a "You handle … calls." line first. Hand-written
+ * prompts use their first sentence.
  */
-function agentSummary(prompt: string | null, intent: string) {
+export function agentSummary(prompt: string | null, intent: string) {
   const lines = (prompt ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
-  const start = lines.findIndex((l) => /^You handle .* calls\./.test(l));
-  const body = lines.slice(start >= 0 ? start + 1 : 0).find((l) => !/^(ROLE|TONE|HOW|ACTIONS|NEVER)\b/.test(l) && !l.startsWith("-"));
-  const sentence = (body ?? "").split(/(?<=\.)\s/)[0].slice(0, 160);
+  const body = lines.find(
+    (l) => !/^(ROLE|TONE|HOW|ACTIONS|TOOLS|NEVER)\b/.test(l) && !/^You handle .* calls\./.test(l) && !l.startsWith("-"),
+  );
+  const sentence = (body ?? "").replace(/\s+You (answer|make|take)[^.]*calls\.$/, "").split(/(?<=\.)\s/)[0].slice(0, 160);
   return sentence || intent.replace(/_/g, " ");
 }
 
@@ -331,6 +322,35 @@ function composeSwara(orgId: string): ComposedPrompt {
       SWARA_TOOL_RULES,
       snapshot,
       languageDirective(),
+    ].join("\n\n"),
+  };
+}
+
+/**
+ * Voice Studio's "play" button. The voice introduces itself in one breath
+ * using the org's persona name and craft for it, says what it is good for,
+ * and stops. No tools, no recording line, no call row.
+ */
+function composeVoicePreview(orgId: string, voiceName: string | undefined): ComposedPrompt {
+  const catalog = voiceByName(voiceName);
+  const saved = orgVoices(orgId).find((v) => v.liveName === catalog.name);
+  const persona = saved?.personaName || catalog.personaName;
+  const voiceBlock = (saved?.promptTemplate || voiceCraft(catalog.name)).split(catalog.personaName).join(persona);
+  const line = `Hi, this is ${persona}. This will be my voice, and I'll be good for ${catalog.bestFor}.`;
+
+  return {
+    name: `${catalog.name} preview`,
+    greeting: line,
+    intent: "other",
+    voice: catalog.name,
+    setupTools: false,
+    preview: true,
+    tools: [],
+    systemInstruction: [
+      `You are ${persona}, giving a ten-second voice sample to the business owner who is choosing a voice for their phone agent. This is not a call; nobody will answer you.`,
+      voiceBlock,
+      `When you receive [CALL_CONNECTED], say this, naturally, as one short turn: "${line}" Then add one short, warm Hindi sentence (under eight words) in the same breath so they hear your Hindi — for example "Aap bataiye, main yahin hoon."`,
+      "Then stop. Do not ask a question, do not wait for a reply, do not introduce yourself twice, do not mention recording. If you hear anything after that, stay silent.",
     ].join("\n\n"),
   };
 }

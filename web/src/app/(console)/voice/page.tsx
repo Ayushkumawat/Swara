@@ -1,49 +1,97 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { Info, Mic, Pause, Play, Trophy } from "lucide-react";
+import { Info, Loader2, Play, Square } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
-import { Card, CardHead } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
-import { Field, ProgressBar, Slider } from "@/components/ui/controls";
+import { Field, Tabs } from "@/components/ui/controls";
 import { CardSkeleton, QueryBoundary } from "@/components/ui/feedback";
 import { Waveform } from "@/components/ui/live";
-import { Mono } from "@/components/ui/table";
-import { LazyMount, Reveal } from "@/components/motion/primitives";
+import { Reveal } from "@/components/motion/primitives";
 import { IS_MOCK, mutations } from "@/lib/api/client";
-import { qk, useScriptTests, useVoices } from "@/lib/api/hooks";
-import { LANGUAGE_LABEL, type ScriptTest, type Voice } from "@/lib/api/schemas";
+import { qk, useVoices } from "@/lib/api/hooks";
+import type { Voice } from "@/lib/api/schemas";
+import { VOICE_PREVIEW_AGENT_ID } from "@/lib/live/voices";
+import { useLiveSession } from "@/lib/live/use-live-session";
 import { cn } from "@/lib/utils";
 
+type Filter = "all" | "female" | "male";
+
+const FILTERS = [
+  { value: "all", label: "All voices" },
+  { value: "female", label: "Women" },
+  { value: "male", label: "Men" },
+] as const satisfies readonly { value: Filter; label: string }[];
+
+/**
+ * Voice Studio. The Live API exposes exactly one thing about how an agent
+ * sounds — which of its prebuilt voices to use — so that is all this page
+ * offers: every voice, a play button that has it introduce itself, and the
+ * talking-style text that makes a voice into a person. No sliders for knobs
+ * the model cannot hear, no cloning the API does not do.
+ */
 export default function VoiceStudioPage() {
   const voices = useVoices();
-  const tests = useScriptTests();
-  const [playing, setPlaying] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+
+  // One preview at a time, page-wide: a real Live session with the mic off.
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const preview = useLiveSession({ onEnded: () => setPreviewId(null) });
+
+  useEffect(() => {
+    if (preview.status === "closed" || preview.status === "error") setPreviewId(null);
+  }, [preview.status]);
+  useEffect(() => {
+    if (preview.error) toast.error(preview.error);
+  }, [preview.error]);
+
+  const togglePreview = async (v: Voice) => {
+    if (previewId === v.id) {
+      setPreviewId(null);
+      await preview.stop();
+      return;
+    }
+    setPreviewId(v.id);
+    try {
+      await preview.start({
+        agentId: VOICE_PREVIEW_AGENT_ID,
+        voice: v.liveName ?? v.name,
+        listenOnly: true,
+        agentName: v.personaName ?? v.name,
+      });
+    } catch (e) {
+      setPreviewId(null);
+      toast.error(e instanceof Error ? e.message : "Could not start preview");
+    }
+  };
+
+  const spoken = useMemo(() => {
+    const agent = [...preview.transcript].reverse().find((t) => t.role === "agent");
+    return agent?.text ?? "";
+  }, [preview.transcript]);
 
   return (
     <>
       <PageHead
         title="Voice studio"
-        sub="Each voice is a person — gender, cadence and a prompt template you can edit and test"
-        actions={
-          <Button variant="primary" onClick={() => toast("Record 40 seconds to clone a voice")}>
-            <Mic className="size-3.5" />
-            Clone a voice
-          </Button>
-        }
+        sub="Every voice the model can speak with. Press play and each one introduces itself."
+        actions={<Tabs tabs={FILTERS} value={filter} onChange={setFilter} size="sm" />}
       />
 
       <Reveal className="mb-3.5">
         <div className="flex gap-3 rounded-[18px] border border-violet/20 bg-violet/[0.07] px-4 py-3.5">
           <Info className="mt-px size-4 shrink-0 text-violet" strokeWidth={1.7} />
           <p className="text-[12.5px] leading-relaxed text-t2">
-            Sliders map to what the model actually exposes. The talking style — gendered Hindi
-            verbs, pace of a grievance vs a sales follow-up — lives in the prompt template.
-            Language is never picked here: the voice follows the caller.
+            The voice itself is fixed by the model — there is no pace, warmth or cloning to set.
+            What you can shape is the person behind it: the name it gives, the gendered Hindi it
+            uses, how fast and how formal it talks. That lives in the talking style, and every
+            agent assigned to the voice picks it up. Language is never chosen here: the voice
+            follows the caller.
           </p>
         </div>
       </Reveal>
@@ -52,84 +100,89 @@ export default function VoiceStudioPage() {
         query={voices}
         skeleton={
           <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <CardSkeleton key={i} height={250} />
+            {Array.from({ length: 9 }).map((_, i) => (
+              <CardSkeleton key={i} height={200} />
             ))}
           </div>
         }
       >
-        {(list) => (
-          <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
-            {list.map((v, i) => (
-              <VoiceCard
-                key={v.id}
-                voice={v}
-                index={i}
-                playing={playing === v.id}
-                onPlay={() => setPlaying(playing === v.id ? null : v.id)}
-              />
-            ))}
-          </div>
-        )}
-      </QueryBoundary>
-
-      <LazyMount className="mt-3.5" placeholder={<CardSkeleton height={280} />}>
-        <QueryBoundary query={tests} skeleton={<CardSkeleton height={280} />}>
-          {(list) => (
-            <div className="space-y-3.5">
-              {list.map((t) => (
-                <ScriptTestCard key={t.id} test={t} />
+        {(list) => {
+          const shown = filter === "all" ? list : list.filter((v) => v.gender === filter);
+          return (
+            <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
+              {shown.map((v, i) => (
+                <VoiceCard
+                  key={v.id}
+                  voice={v}
+                  index={i}
+                  state={
+                    previewId !== v.id
+                      ? "idle"
+                      : preview.status === "live" && preview.agentSpeaking
+                        ? "speaking"
+                        : "connecting"
+                  }
+                  spoken={previewId === v.id ? spoken : ""}
+                  level={previewId === v.id ? preview.agentLevel : 0}
+                  onPlay={() => void togglePreview(v)}
+                />
               ))}
             </div>
-          )}
-        </QueryBoundary>
-      </LazyMount>
+          );
+        }}
+      </QueryBoundary>
     </>
   );
 }
 
+type PreviewState = "idle" | "connecting" | "speaking";
+
 function VoiceCard({
   voice,
   index,
-  playing,
+  state,
+  spoken,
+  level,
   onPlay,
 }: {
   voice: Voice;
   index: number;
-  playing: boolean;
+  state: PreviewState;
+  spoken: string;
+  level: number;
   onPlay: () => void;
 }) {
   const qc = useQueryClient();
-  const [pace, setPace] = useState(voice.pace);
-  const [formality, setFormality] = useState(voice.formality);
-  const [warmth, setWarmth] = useState(voice.warmth);
-  const [personaName, setPersonaName] = useState(voice.personaName ?? voice.name);
+  const stockName = voice.personaName ?? voice.name;
+  const [personaName, setPersonaName] = useState(stockName);
   const [promptTemplate, setPromptTemplate] = useState(voice.promptTemplate ?? "");
   const [openPrompt, setOpenPrompt] = useState(false);
-  const dirty =
-    pace !== voice.pace ||
-    formality !== voice.formality ||
-    warmth !== voice.warmth ||
-    personaName !== (voice.personaName ?? voice.name) ||
-    promptTemplate !== (voice.promptTemplate ?? "");
+  const [saving, setSaving] = useState(false);
+  const dirty = personaName !== stockName || promptTemplate !== (voice.promptTemplate ?? "");
+  const active = state !== "idle";
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.06, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ delay: Math.min(index, 8) * 0.05, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
     >
-      <Card interactive={false} className="h-full">
-        <div className="mb-4 flex items-center gap-3">
+      <Card interactive={false} className={cn("h-full", active && "ring-1 ring-cyan/30")}>
+        <div className="mb-3 flex items-center gap-3">
           <button
             onClick={onPlay}
-            aria-label={playing ? "Stop preview" : "Play preview"}
-            className="grad-brand flex size-9 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105"
+            aria-label={active ? "Stop preview" : `Play ${voice.liveName ?? voice.name}`}
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105",
+              active ? "bg-cyan/20 text-cyan" : "grad-brand text-void",
+            )}
           >
-            {playing ? (
-              <Pause className="size-3.5 text-void" fill="currentColor" />
+            {state === "connecting" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : state === "speaking" ? (
+              <Square className="size-3 fill-current" />
             ) : (
-              <Play className="size-3.5 translate-x-px text-void" fill="currentColor" />
+              <Play className="size-3.5 translate-x-px fill-current" />
             )}
           </button>
           <div className="min-w-0 flex-1">
@@ -137,78 +190,88 @@ function VoiceCard({
               <span className="truncate text-[13px] font-medium text-t1">
                 {voice.liveName ? `${voice.liveName} · ${personaName}` : voice.name}
               </span>
-              {voice.cloned ? <Pill tone="violet">Cloned</Pill> : null}
+              {voice.character ? <Pill tone="violet">{voice.character}</Pill> : null}
             </div>
             <div className="mt-0.5 truncate text-[11px] text-t3">
-              {voice.gender} · {voice.style ?? voice.descriptor} · follows caller
-              {LANGUAGE_LABEL[voice.language] ? ` (${LANGUAGE_LABEL[voice.language]} home)` : ""}
+              {voice.gender === "female" ? "woman" : voice.gender === "male" ? "man" : "neutral"} · {voice.descriptor}
             </div>
           </div>
         </div>
 
-        <div className="mb-4 flex h-6 items-center">
-          {playing ? (
-            <Waveform bars={22} height={22} tone="cyan" className="w-full [&>span]:flex-1" />
+        <div className="mb-3 min-h-[38px]">
+          {active ? (
+            <div className="space-y-1.5">
+              {/* Amplitude only brightens the bars; it drives nothing else. */}
+              <div style={{ opacity: 0.55 + Math.min(level, 1) * 0.45 }}>
+                <Waveform
+                  bars={22}
+                  height={18}
+                  tone="cyan"
+                  active={state === "speaking"}
+                  className="w-full [&>span]:flex-1"
+                />
+              </div>
+              <p className="line-clamp-2 text-[11.5px] italic leading-snug text-t2">
+                {spoken || (state === "connecting" ? "Connecting…" : "…")}
+              </p>
+            </div>
           ) : (
-            <div className="h-px w-full bg-hairline" />
+            <p className="text-[12px] leading-snug text-t2">
+              Good for <span className="text-t1">{voice.bestFor ?? "general calls"}</span>.
+            </p>
           )}
         </div>
 
-        <div className="space-y-3.5">
-          <Slider label="Pace" value={pace} onChange={setPace} format={(v) => `${(0.7 + v * 0.6).toFixed(2)}×`} />
-          <Slider label="Formality" value={formality} onChange={setFormality} format={(v) => `${Math.round(v * 100)}%`} />
-          <Slider label="Warmth" value={warmth} onChange={setWarmth} format={(v) => `${Math.round(v * 100)}%`} />
-        </div>
-
-        <div className="mt-4 flex items-center justify-between border-t border-hairline pt-3">
-          <Mono className="text-[10.5px]">
-            {voice.latencyMs}ms first token
-          </Mono>
-          <Button size="sm" variant="subtle" onClick={() => setOpenPrompt((v) => !v)}>
-            {openPrompt ? "Hide craft" : "Edit craft"}
-          </Button>
-          {dirty ? (
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={async () => {
-                try {
-                  if (!IS_MOCK) {
-                    await mutations.updateVoice(voice.id, { pace, formality, warmth, personaName, promptTemplate });
-                  }
-                  toast.success(`${personaName} saved`);
-                  void qc.invalidateQueries({ queryKey: qk.voices });
-                } catch {
-                  toast.error("Could not save voice");
-                }
-              }}
-            >
-              Save
+        <div className="flex items-center justify-between gap-2 border-t border-hairline pt-3">
+          <span className="truncate text-[11px] text-t3">
+            {voice.assignedTo ? `Used by ${voice.assignedTo}` : "Not assigned to an agent"}
+          </span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button size="sm" variant="subtle" onClick={() => setOpenPrompt((v) => !v)}>
+              {openPrompt ? "Hide style" : "Talking style"}
             </Button>
-          ) : (
-            <span className="text-[11px] text-t3">
-              {voice.assignedTo ?? "Unassigned"}
-            </span>
-          )}
+            {dirty ? (
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={saving}
+                onClick={async () => {
+                  setSaving(true);
+                  try {
+                    if (!IS_MOCK) await mutations.updateVoice(voice.id, { personaName, promptTemplate });
+                    toast.success(`${personaName} saved`);
+                    void qc.invalidateQueries({ queryKey: qk.voices });
+                  } catch {
+                    toast.error("Could not save voice");
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+              >
+                Save
+              </Button>
+            ) : null}
+          </div>
         </div>
 
         {openPrompt ? (
           <div className="mt-3 space-y-2.5 border-t border-hairline pt-3">
-            <Field label="Spoken name">
+            <Field label="Spoken name" hint="What this voice calls itself. Agents without their own name use it.">
               <input
                 value={personaName}
                 onChange={(e) => setPersonaName(e.target.value)}
+                maxLength={40}
                 className="glass w-full rounded-[11px] px-3 py-2 text-[13px] text-t1 outline-none"
               />
             </Field>
             <Field
               label="Talking style"
-              hint="Gendered verbs and register are load-bearing. This is what a test call hears."
+              hint="Gendered verbs and register are load-bearing. This is what every call on this voice hears."
             >
               <textarea
                 value={promptTemplate}
                 onChange={(e) => setPromptTemplate(e.target.value)}
-                rows={6}
+                rows={5}
                 className="glass w-full resize-y rounded-[12px] p-3 font-[family-name:var(--font-mono)] text-[11.5px] leading-relaxed text-t1 outline-none"
               />
             </Field>
@@ -216,89 +279,5 @@ function VoiceCard({
         ) : null}
       </Card>
     </motion.div>
-  );
-}
-
-/**
- * A/B on real outcome data rather than listener preference. §4.9 makes the
- * dependency explicit: this is only meaningful once call-outcome tagging is
- * accurate, so an underpowered test says so instead of declaring a winner.
- */
-function ScriptTestCard({ test }: { test: ScriptTest }) {
-  const conclusive = test.winner !== null;
-  const lift =
-    ((test.variantB.resolveRate - test.variantA.resolveRate) / test.variantA.resolveRate) * 100;
-
-  return (
-    <Card interactive={false}>
-      <CardHead
-        title="A/B script test"
-        sub={`${test.agentName} · ${test.hypothesis}`}
-        action={
-          conclusive ? (
-            <Pill tone="cyan">
-              <Trophy className="size-3" />
-              Variant {test.winner} wins
-            </Pill>
-          ) : (
-            <Pill tone="amber">Not conclusive yet</Pill>
-          )
-        }
-      />
-
-      <div className="grid gap-3 md:grid-cols-2">
-        {(["A", "B"] as const).map((key) => {
-          const v = key === "A" ? test.variantA : test.variantB;
-          const winner = test.winner === key;
-          return (
-            <div
-              key={key}
-              className={cn(
-                "rounded-[14px] border p-3.5 transition-colors",
-                winner ? "border-cyan/35 bg-cyan/[0.06]" : "border-hairline bg-white/[0.035]",
-              )}
-            >
-              <Pill tone={winner ? "cyan" : "violet"} className="mb-2.5">
-                Variant {key}
-                {winner ? " — winning" : ""}
-              </Pill>
-              <p className="mb-3 text-[12.5px] italic leading-snug text-t2">
-                &ldquo;{v.script}&rdquo;
-              </p>
-              <ProgressBar value={v.resolveRate} tone={winner ? "cyan" : "brand"} height={5} />
-              <div className="mt-2 flex justify-between font-[family-name:var(--font-mono)] text-[10.5px] text-t3">
-                <span>{Math.round(v.resolveRate * 100)}% resolved</span>
-                <span>{v.calls.toLocaleString("en-IN")} calls</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-hairline pt-3 text-[11.5px] text-t3">
-        <span>
-          Lift:{" "}
-          <span className={lift > 0 ? "text-cyan" : "text-coral"}>
-            {lift > 0 ? "+" : ""}
-            {lift.toFixed(1)}%
-          </span>
-        </span>
-        <span>Confidence: {Math.round(test.confidence * 100)}%</span>
-        {conclusive ? (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="ml-auto"
-            onClick={() => toast.success(`Variant ${test.winner} promoted to 100% of traffic`)}
-          >
-            Ship the winner
-          </Button>
-        ) : (
-          <span className="ml-auto">
-            Needs ~{Math.round((0.95 - test.confidence) * 4000)} more calls to call it
-          </span>
-        )}
-      </div>
-    </Card>
   );
 }

@@ -263,8 +263,10 @@ export const mutations = {
     apiSend("DELETE", `/agents/${id}`, { ok: true }, z.object({ ok: z.boolean() })),
   planAgents: (body: { brief: string; answers?: Record<string, string> }) =>
     apiSend("POST", "/agents/plan", body, AgentPlanSchema),
-  swaraChat: (messages: { role: "user" | "model"; text: string }[]) =>
-    apiSend("POST", "/swara/chat", { messages }, SwaraChatResponseSchema),
+  swaraChat: (
+    messages: { role: "user" | "model"; text: string }[],
+    context?: { agentId?: string; agentName?: string; page?: string },
+  ) => apiSend("POST", "/swara/chat", { messages, context }, SwaraChatResponseSchema),
   applyPlan: (plan: Pick<AgentPlan, "agents">) =>
     apiSend(
       "POST",

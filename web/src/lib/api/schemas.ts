@@ -382,6 +382,11 @@ export type Customer = z.infer<typeof CustomerSchema>;
 
 /* ── Voice studio (§4.9) ────────────────────────────────────────────────── */
 
+/**
+ * A voice is a prebuilt Live API voice plus the persona an org wrote around
+ * it. There are no pace/warmth/formality numbers because the API has no such
+ * parameters; everything about delivery lives in `promptTemplate`.
+ */
 export const VoiceSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -389,13 +394,12 @@ export const VoiceSchema = z.object({
   descriptor: z.string(),
   gender: z.enum(["female", "male", "neutral"]),
   assignedTo: z.string().nullable(),
-  pace: z.number(),
-  formality: z.number(),
-  warmth: z.number(),
-  latencyMs: z.number(),
-  cloned: z.boolean(),
   liveName: z.string().optional(),
   style: z.string().optional(),
+  /** Google's one-word character for the voice ("Firm", "Breezy"). */
+  character: z.string().optional(),
+  /** What the voice suits — spoken in the studio preview. */
+  bestFor: z.string().optional(),
   personaName: z.string().optional(),
   promptTemplate: z.string().optional(),
   assignedAgentId: z.string().nullable().optional(),

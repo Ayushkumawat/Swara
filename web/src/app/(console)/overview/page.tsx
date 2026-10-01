@@ -11,7 +11,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
-import { CopilotBar } from "@/components/chrome/copilot";
+import { SwaraBar } from "@/components/chrome/swara-drawer";
 import { Card, CardHead, MetricCard } from "@/components/ui/card";
 import { ButtonLink } from "@/components/ui/button";
 import { LiveDot, Pill, sentimentTone } from "@/components/ui/pill";
@@ -218,7 +218,7 @@ export default function OverviewPage() {
       </div>
 
       <Reveal delay={0.05} className="mb-3.5">
-        <CopilotBar />
+        <SwaraBar />
       </Reveal>
 
       <LazyMount placeholder={<CardSkeleton height={190} />}>

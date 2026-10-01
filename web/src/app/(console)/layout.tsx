@@ -9,24 +9,24 @@ import { Topbar } from "@/components/chrome/topbar";
 import { useUi } from "@/lib/ui-store";
 
 /**
- * The palette and copilot are opened by keystroke, not on load, so neither
- * belongs in the first bundle. cmdk and the copilot's message UI arrive only
- * once the user reaches for them.
+ * The palette and Swara are opened by keystroke, not on load, so neither
+ * belongs in the first bundle. cmdk and Swara's chat UI arrive only once the
+ * user reaches for them.
  */
 const CommandPalette = dynamic(
   () => import("@/components/chrome/command-palette").then((m) => m.CommandPalette),
   { ssr: false },
 );
 
-const CopilotDrawer = dynamic(
-  () => import("@/components/chrome/copilot").then((m) => m.CopilotDrawer),
+const SwaraDrawer = dynamic(
+  () => import("@/components/chrome/swara-drawer").then((m) => m.SwaraDrawer),
   { ssr: false },
 );
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const setPalette = useUi((s) => s.setPalette);
-  const openCopilot = useUi((s) => s.openCopilot);
+  const openSwara = useUi((s) => s.openSwara);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -35,21 +35,21 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         e.preventDefault();
         setPalette(!useUi.getState().paletteOpen);
       }
-      // ⌘J for the copilot — reachable from anywhere, which is the point of
-      // treating it as a load-bearing feature rather than a widget.
+      // ⌘J for Swara — reachable from anywhere, which is the point of
+      // treating her as a load-bearing feature rather than a widget.
       if (meta && e.key.toLowerCase() === "j") {
         e.preventDefault();
-        openCopilot();
+        openSwara();
       }
       if (e.key === "Escape") {
         setPalette(false);
-        useUi.getState().setCopilot(false);
+        useUi.getState().setSwara(false);
         useUi.getState().setNotifications(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openCopilot, setPalette]);
+  }, [openSwara, setPalette]);
 
   return (
     <>
@@ -62,7 +62,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
         </main>
       </div>
       <CommandPalette />
-      <CopilotDrawer />
+      <SwaraDrawer />
     </>
   );
 }

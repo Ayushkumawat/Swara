@@ -119,7 +119,8 @@ def build_config(system_instruction: str, voice: str, tools: list[dict[str, Any]
         output_audio_transcription=types.AudioTranscriptionConfig(),
         realtime_input_config=types.RealtimeInputConfig(automatic_activity_detection=VAD_CONFIG),
         context_window_compression=COMPRESSION_CONFIG,
-        thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MINIMAL),
+        # No thinking_config: gemini-3.8-live dropped thinking_level (reasoning
+        # is interleaved) and rejects it in the setup message.
         tools=[types.Tool(function_declarations=declarations)] if declarations else None,
         session_resumption=types.SessionResumptionConfig(handle=resume_handle),
     )
@@ -143,7 +144,7 @@ class Call:
     call_id: str | None = None
     agent_id: str | None = None
     agent_name: str = ""
-    model: str = "gemini-3.1-flash-live-preview"
+    model: str = "gemini-3.8-live"  # overridden by the console's /session answer
     api_version: str = "v1alpha"
     system_instruction: str = ""
     voice: str = "Kore"
@@ -698,6 +699,13 @@ async def handle_model_message(call: Call, session: Any, plivo_ws: Any, reconnec
         asyncio.create_task(push_transcript(call))
 
 
+def _is_async_tool(call: Call, name: str) -> bool:
+    for d in call.tools:
+        if d.get("name") == name:
+            return str(d.get("behavior") or "").upper() == "NON_BLOCKING"
+    return False
+
+
 async def handle_tool_calls(call: Call, session: Any, plivo_ws: Any, calls: list[Any], reconnect: asyncio.Event) -> None:
     responses: list[types.FunctionResponse] = []
     controls: list[dict[str, Any]] = []
@@ -714,7 +722,15 @@ async def handle_tool_calls(call: Call, session: Any, plivo_ws: Any, calls: list
         result.pop("__plan", None)
         if control:
             controls.append(control)
-        responses.append(types.FunctionResponse(id=fc.id, name=name, response=result))
+        # The console tags lookups NON_BLOCKING so the agent keeps talking
+        # while they run; the response then says when the result may be
+        # spoken. WHEN_IDLE = once the caller has stopped talking.
+        scheduling = (
+            types.FunctionResponseScheduling.WHEN_IDLE if _is_async_tool(call, name) else None
+        )
+        responses.append(
+            types.FunctionResponse(id=fc.id, name=name, response=result, scheduling=scheduling)
+        )
     await session.send_tool_response(function_responses=responses)
 
     for control in controls:

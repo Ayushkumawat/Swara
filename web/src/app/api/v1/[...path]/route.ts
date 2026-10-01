@@ -174,6 +174,13 @@ const SwaraChatBody = z.object({
     .array(z.object({ role: z.enum(["user", "model"]), text: z.string().max(8000) }))
     .min(1)
     .max(40),
+  context: z
+    .object({
+      agentId: z.string().max(80).optional(),
+      agentName: z.string().max(80).optional(),
+      page: z.string().max(40).optional(),
+    })
+    .optional(),
 });
 const ApplyPlanBody = z.object({ plan: AgentPlanSchema.pick({ agents: true }) });
 const DepartmentBody = z.object({
@@ -370,7 +377,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     const parsed = SwaraChatBody.safeParse(body);
     if (!parsed.success) return json({ error: "Send at least one message" }, 400);
     try {
-      return json(await runSwaraChat(orgId, parsed.data.messages));
+      return json(await runSwaraChat(orgId, parsed.data.messages, parsed.data.context));
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : "Swara could not reply" }, 502);
     }
@@ -493,11 +500,8 @@ const AgentPatch = z.object({
   personaName: z.string().max(40).optional(),
 });
 const VoicePatch = z.object({
-  promptTemplate: z.string().optional(),
-  personaName: z.string().optional(),
-  pace: z.number().optional(),
-  formality: z.number().optional(),
-  warmth: z.number().optional(),
+  promptTemplate: z.string().max(2000).optional(),
+  personaName: z.string().max(40).optional(),
   assignedAgentId: z.string().nullable().optional(),
 });
 const CampaignPatch = z.object({

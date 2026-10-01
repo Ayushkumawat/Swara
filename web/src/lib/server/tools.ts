@@ -1,7 +1,11 @@
 import "server-only";
 import { getDb } from "./db";
 import { ingestKnowledgeDoc, searchKnowledge } from "./ai";
-import { createBooking } from "./repo";
+import { agents as listAgents, createBooking, updateAgent } from "./repo";
+import { agentSummary } from "./live-prompt";
+import { NODE_KIND_LABEL } from "@/lib/agents/flow";
+import { VOICE_CATALOG, voiceByName } from "@/lib/live/voices";
+import { guessGender } from "@/lib/agents/role";
 import { notifyTicket, lookupTickets, registerTicket, resolveTicket } from "./tickets";
 import {
   appointmentTypes,
@@ -191,9 +195,135 @@ async function runTool(
         };
       }
     }
+    case "list_agents":
+      return {
+        agents: listAgents(orgId).map((a) => ({
+          id: a.id,
+          name: a.name,
+          job: agentSummary(a.prompt ?? null, a.intent),
+          status: a.status,
+          direction: a.direction,
+          introduces_itself_as: a.personaName ?? null,
+          voice: a.voice ?? null,
+          tools: a.tools,
+        })),
+      };
+    case "get_agent": {
+      const agent = findAgent(orgId, str(args.agent));
+      if (!agent) return { error: `No agent called ${str(args.agent) ?? "that"}. Use list_agents for the exact names.` };
+      return {
+        id: agent.id,
+        name: agent.name,
+        status: agent.status,
+        direction: agent.direction,
+        intent: agent.intent,
+        introduces_itself_as: agent.personaName ?? null,
+        voice: agent.voice ?? null,
+        tools: agent.tools,
+        role: agent.prompt ?? "",
+        flow_steps: (agent.nodes as { kind: keyof typeof NODE_KIND_LABEL; title: string }[]).map(
+          (n) => `${NODE_KIND_LABEL[n.kind] ?? n.kind}: ${n.title}`,
+        ),
+      };
+    }
+    case "update_agent":
+      return updateAgentTool(orgId, args);
     default:
       return { error: `Unknown tool ${name}` };
   }
+}
+
+/* ── Editing existing agents (Swara) ─────────────────────────────────────── */
+
+function findAgent(orgId: string, ref: string | undefined) {
+  if (!ref) return undefined;
+  const q = ref.trim().toLowerCase();
+  const all = listAgents(orgId);
+  return (
+    all.find((a) => a.id === ref.trim()) ??
+    all.find((a) => a.name.toLowerCase() === q) ??
+    all.find((a) => a.name.toLowerCase().includes(q) || (a.personaName ?? "").toLowerCase() === q)
+  );
+}
+
+const CALL_TOOL_NAMES = new Set([
+  "lookup_order", "register_complaint", "lookup_ticket", "notify_stakeholder", "resolve_ticket",
+  "book_slot", "search_knowledge", "transfer_to_human", "handoff_to_agent", "end_call",
+]);
+
+/**
+ * Applies a change Swara agreed with the owner. Every edit is a new version
+ * (repo.updateAgent bumps it), so Versions shows exactly what she changed.
+ */
+function updateAgentTool(orgId: string, args: Record<string, unknown>): Record<string, unknown> {
+  const agent = findAgent(orgId, str(args.agent));
+  if (!agent) return { error: `No agent called ${str(args.agent) ?? "that"}. Use list_agents for the exact names.` };
+
+  const changed: string[] = [];
+  const patch: Parameters<typeof updateAgent>[2] = {};
+
+  const name = str(args.name)?.trim();
+  if (name && name !== agent.name) {
+    patch.name = name.slice(0, 60);
+    changed.push(`name → ${patch.name}`);
+  }
+  const role = str(args.role)?.trim();
+  if (role && role !== agent.prompt) {
+    if (role.length < 40) return { error: "That role is too short to run a call on. Send the complete role text." };
+    patch.prompt = role.slice(0, 6000);
+    changed.push("role rewritten");
+  }
+  const persona = str(args.persona_name)?.trim();
+  if (persona && persona !== agent.personaName) {
+    patch.personaName = persona.split(/\s+/)[0].slice(0, 40);
+    changed.push(`introduces itself as ${patch.personaName}`);
+  }
+  const voiceArg = str(args.voice)?.trim();
+  if (voiceArg) {
+    const match = VOICE_CATALOG.find((v) => v.name.toLowerCase() === voiceArg.toLowerCase());
+    if (!match) return { error: `No voice called ${voiceArg}. Voices: ${VOICE_CATALOG.map((v) => v.name).join(", ")}.` };
+    const personaGender = guessGender(patch.personaName ?? agent.personaName);
+    if (personaGender && personaGender !== match.gender) {
+      return {
+        error: `${match.name} is a ${match.gender} voice but the agent introduces itself as ${patch.personaName ?? agent.personaName}. Pick a ${personaGender} voice (e.g. ${VOICE_CATALOG.filter((v) => v.gender === personaGender).slice(0, 4).map((v) => v.name).join(", ")}) or change the name too.`,
+      };
+    }
+    if (match.name !== agent.voice) {
+      patch.voice = match.name;
+      changed.push(`voice → ${match.name} (${voiceByName(match.name).descriptor})`);
+    }
+  }
+  const direction = str(args.direction);
+  if (direction && ["inbound", "outbound", "both"].includes(direction) && direction !== agent.direction) {
+    patch.direction = direction;
+    changed.push(`direction → ${direction}`);
+  }
+  const status = str(args.status);
+  if (status && ["draft", "testing", "live", "paused"].includes(status) && status !== agent.status) {
+    patch.status = status;
+    changed.push(`status → ${status}`);
+  }
+  const add = Array.isArray(args.add_tools) ? (args.add_tools as unknown[]).map(String) : [];
+  const remove = Array.isArray(args.remove_tools) ? (args.remove_tools as unknown[]).map(String) : [];
+  if (add.length || remove.length) {
+    const unknown = [...add, ...remove].filter((t) => !CALL_TOOL_NAMES.has(t));
+    if (unknown.length) return { error: `Unknown tools: ${unknown.join(", ")}. Available: ${[...CALL_TOOL_NAMES].join(", ")}.` };
+    const next = new Set(agent.tools.length ? agent.tools : ["end_call"]);
+    for (const t of add) next.add(t);
+    for (const t of remove) if (t !== "end_call") next.delete(t);
+    patch.tools = [...next];
+    changed.push(`tools → ${patch.tools.join(", ")}`);
+  }
+
+  if (changed.length === 0) return { changed: false, note: "Nothing in that request differs from what the agent already has." };
+  const res = updateAgent(orgId, agent.id, patch);
+  if (res.error) return { error: res.error };
+  return {
+    changed: true,
+    agent: patch.name ?? agent.name,
+    changes: changed,
+    note: "Saved as a new version; it applies from the next call. Tell the owner what changed in one line.",
+  };
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);

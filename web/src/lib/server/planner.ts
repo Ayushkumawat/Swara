@@ -168,8 +168,9 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
           "- job: one sentence, the job title in prose.",
           "- personaName: the first name this agent uses on the call. If the brief says 'introduces itself as X' or names the agent after a person (e.g. 'Aarav'), use exactly that. Otherwise pick a common Indian first name that fits the voice's gender. Two agents in one plan must not share a name.",
           "- voice: one of VOICES AVAILABLE, by name. If the brief names a voice for the agent, use it. Otherwise: complaints and grievances get a calm or soft voice; sales and reminders get a brighter one; a front door gets a crisp one. The gender must match personaName.",
-          "- role: 10-16 sentences written as a senior trainer briefing a new hire for THIS job at THIS business. Cover, in order: (1) the one-sentence opening line — name, business, then an open question or the reason for calling; (2) how to find out what the caller wants: listen, let them finish, one open question if unclear; (3) the details this job actually needs, and the moment each is asked for — never name and phone as an opener, and never a phone number on an inbound call since you already have it; (4) the three most common situations for this job at this business and what to do in each; (5) what to say when you do not have the answer; (6) how to close. Write it as instructions to the agent, in plain speech. No headings, no bullet points.",
-          "- A realistic agent listens more than it asks, never asks for what it was already told, and never asks two things in one turn. Say this in the role in the agent's own terms.",
+          "- role: 5-9 plain sentences, second person, only what is SPECIFIC to this job at this business — the kind of note a manager leaves a new hire who already knows how to talk on the phone. Include: the opening line, written with the literal placeholder {name} for the agent's own name (e.g. 'Hi, {name} here from Fresho — what can I help you with?'); the one or two details this job needs and the moment to ask for each; the two to four situations this business actually sees and what to do in each; one sentence on the manner that suits this job (e.g. 'slow and unhurried, let them finish' for complaints, 'brisk and friendly' for reminders); what to say when the answer is not known.",
+          "- Do NOT put general phone manners in the role — no 'listen first', 'one question at a time', 'don't ask twice', 'be polite', 'never invent facts', how to say goodbye, language handling, or anything about tools. The agent already gets all of that separately; repeating it makes it stilted. No headings, no bullet points, no numbered lists.",
+          "- A front door agent's role is 2-4 sentences: the opening line, how it works out who the caller needs, and that it hands over rather than solving or collecting details. Only propose one when there are 3+ inbound agents for it to route to.",
           "- knowledge: only facts the owner actually gave that THIS agent must quote (policy, fees, hours, what to say). Empty string if none. Do not invent prices or policies. Do not copy another agent's facts into this one.",
           "- If HUMAN ESCALATION is no, or there is no transfer desk, no agent may transfer to a person. They take a callback instead.",
           "- Every agent follows the caller's language automatically. Do not assign a single language.",
@@ -220,11 +221,18 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
         source: "gemini",
         summary: parsed.summary ?? "",
         questions: parsed.questions ?? [],
-        agents: parsed.agents.slice(0, 8).map((a) => ({
-          ...a,
-          intent: IntentSchema.options.includes(a.intent) ? a.intent : "other",
-          handsOffTo: (a.handsOffTo ?? []).filter((k) => keys.has(k) && k !== a.key),
-        })),
+        agents: parsed.agents.slice(0, 8).map((a) => {
+          const handsOffTo = (a.handsOffTo ?? []).filter((k) => keys.has(k) && k !== a.key);
+          return {
+            ...a,
+            intent: IntentSchema.options.includes(a.intent) ? a.intent : "other",
+            handsOffTo,
+            // A "front door" with nobody to route to is a receptionist told
+            // not to help anyone. That flag only means something with
+            // siblings behind it.
+            isFrontDoor: Boolean(a.isFrontDoor) && handsOffTo.length > 0,
+          };
+        }),
       };
     } catch (error) {
       console.error(`[planner] ${model} failed:`, String(error).slice(0, 200));
@@ -460,7 +468,6 @@ function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
         intent: a.intent,
         isFrontDoor: a.isFrontDoor,
         direction: a.direction,
-        canTransfer,
         tools,
       }),
     };

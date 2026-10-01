@@ -1,0 +1,273 @@
+"""Async REST client for Agent Stack APIs.
+
+Provides AgentClient with sub-resources for agent CRUD, call management,
+and number assignment -- all using the shared HttpTransport.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from plivo_agentstack._http import HttpTransport
+
+# ---------------------------------------------------------------------------
+# semantic_vad eagerness presets
+# ---------------------------------------------------------------------------
+
+EAGERNESS_PRESETS = {
+    "low": {
+        "completed_turn_delay_ms": 500,
+        "incomplete_turn_delay_ms": 2500,
+        "uncertain_turn_delay_ms": 1000,
+        "min_interruption_duration_ms": 600,
+        "false_interruption_timeout_ms": 1200,
+    },
+    "medium": {
+        "completed_turn_delay_ms": 250,
+        "incomplete_turn_delay_ms": 1800,
+        "uncertain_turn_delay_ms": 900,
+        "min_interruption_duration_ms": 500,
+        "false_interruption_timeout_ms": 1000,
+    },
+    "high": {
+        "completed_turn_delay_ms": 150,
+        "incomplete_turn_delay_ms": 1400,
+        "uncertain_turn_delay_ms": 700,
+        "min_interruption_duration_ms": 300,
+        "false_interruption_timeout_ms": 750,
+    },
+    "auto": {},  # server defaults
+}
+
+
+def _expand_semantic_vad(value: Any) -> dict | None:
+    """Expand semantic_vad shorthand to full config dict.
+
+    Accepts:
+      - str:  "high" / "medium" / "low" / "auto" -> eagerness preset
+      - dict with "eagerness" key: preset + explicit overrides
+      - dict without "eagerness": raw values, passed through unchanged
+      - None: no semantic_vad config
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        preset = EAGERNESS_PRESETS.get(value)
+        if preset is None:
+            raise ValueError(
+                f"Unknown semantic_vad preset: {value!r}. "
+                f"Use one of: {', '.join(EAGERNESS_PRESETS)}"
+            )
+        return dict(preset)
+    if isinstance(value, dict):
+        eagerness = value.pop("eagerness", None)
+        if eagerness:
+            preset = EAGERNESS_PRESETS.get(eagerness)
+            if preset is None:
+                raise ValueError(
+                    f"Unknown eagerness: {eagerness!r}. "
+                    f"Use one of: {', '.join(EAGERNESS_PRESETS)}"
+                )
+            base = dict(preset)
+            base.update(value)  # explicit fields override preset
+            return base
+        return value  # raw dict, pass through unchanged
+    raise TypeError(f"semantic_vad must be str, dict, or None -- got {type(value).__name__}")
+
+
+class AgentResource:
+    """Agent CRUD -- POST/GET/PATCH/DELETE /Agent
+
+    Agent IDs are UUIDs (e.g. "550e8400-e29b-41d4-a716-446655440000").
+    Creating an agent requires ``agent_name``.
+    """
+
+    def __init__(self, http: HttpTransport, prefix: str) -> None:
+        self._http = http
+        self._prefix = prefix
+
+    async def create(self, **kwargs: Any) -> dict:
+        """POST /Agent
+
+        Required fields: ``agent_name``, ``websocket_url``.
+
+        ``semantic_vad`` accepts a preset string ("high", "medium", "low", "auto")
+        or a dict with optional ``eagerness`` key plus explicit overrides.
+        Returns the created agent with ``agent_uuid`` as the identifier.
+        """
+        if "semantic_vad" in kwargs:
+            kwargs["semantic_vad"] = _expand_semantic_vad(kwargs["semantic_vad"])
+        return await self._http.request("POST", f"{self._prefix}/Agent", json=kwargs)
+
+    async def get(self, agent_uuid: str) -> dict:
+        """GET /Agent/{agent_uuid}"""
+        return await self._http.request("GET", f"{self._prefix}/Agent/{agent_uuid}")
+
+    async def list(self, **params: Any) -> dict:
+        """GET /Agent -- paginated list.
+
+        Optional query params: limit, offset, sort_by, sort_order,
+        agent_mode, participant_mode.
+
+        Returns ``{"api_id": "...", "objects": [...],
+        "meta": {"limit", "offset", "total_count", "previous", "next"}}``.
+        """
+        return await self._http.request("GET", f"{self._prefix}/Agent", params=params)
+
+    async def update(self, agent_uuid: str, **kwargs: Any) -> dict:
+        """PATCH /Agent/{agent_uuid}"""
+        if "semantic_vad" in kwargs:
+            kwargs["semantic_vad"] = _expand_semantic_vad(kwargs["semantic_vad"])
+        return await self._http.request(
+            "PATCH", f"{self._prefix}/Agent/{agent_uuid}", json=kwargs
+        )
+
+    async def delete(self, agent_uuid: str) -> None:
+        """DELETE /Agent/{agent_uuid}"""
+        await self._http.request("DELETE", f"{self._prefix}/Agent/{agent_uuid}")
+
+
+class CallResource:
+    """Call management -- connect, initiate, dial."""
+
+    def __init__(self, http: HttpTransport, prefix: str) -> None:
+        self._http = http
+        self._prefix = prefix
+
+    async def connect(self, call_uuid: str, agent_uuid: str) -> dict:
+        """POST /AgentCall/{call_uuid}/connect -- connect an active call to an agent."""
+        return await self._http.request(
+            "POST",
+            f"{self._prefix}/AgentCall/{call_uuid}/connect",
+            json={"agent_id": agent_uuid},
+        )
+
+    async def initiate(
+        self,
+        agent_uuid: str,
+        from_: str,
+        to: list[str] | str,
+        *,
+        voicemail_detect: bool = False,
+        **kwargs: Any,
+    ) -> dict:
+        """POST /AgentCall -- initiate an outbound call.
+
+        Args:
+            agent_uuid: Agent UUID to handle the call.
+            from_: Caller ID (phone number).
+            to: Recipient number(s).
+            voicemail_detect: Enable async voicemail/machine detection.
+                Detection result arrives via "voicemail.detected" WS event.
+            **kwargs: dial_mode, caller_name, time_limit, ring_timeout, etc.
+        """
+        if isinstance(to, str):
+            to = [to]
+        body: dict[str, Any] = {"agent_id": agent_uuid, "from": from_, "to": to}
+        if voicemail_detect:
+            body["voicemail_detect"] = True
+        body.update(kwargs)
+        return await self._http.request("POST", f"{self._prefix}/AgentCall", json=body)
+
+    async def dial(
+        self,
+        call_uuid: str,
+        targets: list[dict],
+        **kwargs: Any,
+    ) -> dict:
+        """POST /AgentCall/{call_uuid}/dial -- dial out to one or more targets.
+
+        Args:
+            call_uuid: Active call UUID.
+            targets: List of dicts with "number" (and optional "send_digits").
+            **kwargs: dial_mode, caller_id, timeout, time_limit, etc.
+        """
+        body: dict[str, Any] = {"targets": targets, **kwargs}
+        return await self._http.request(
+            "POST", f"{self._prefix}/AgentCall/{call_uuid}/dial", json=body
+        )
+
+
+class NumberResource:
+    """Number management -- assign, list, unassign phone numbers for agents.
+
+    Numbers are in E.164 format (e.g. "+14155551234").
+    """
+
+    def __init__(self, http: HttpTransport, prefix: str) -> None:
+        self._http = http
+        self._prefix = prefix
+
+    async def assign(self, agent_uuid: str, number: str) -> dict:
+        """POST /Agent/{agent_uuid}/Number -- assign a number to an agent."""
+        return await self._http.request(
+            "POST",
+            f"{self._prefix}/Agent/{agent_uuid}/Number",
+            json={"number": number},
+        )
+
+    async def list(self, agent_uuid: str) -> dict:
+        """GET /Agent/{agent_uuid}/Number -- list numbers for an agent."""
+        return await self._http.request(
+            "GET", f"{self._prefix}/Agent/{agent_uuid}/Number"
+        )
+
+    async def unassign(self, agent_uuid: str, number: str) -> None:
+        """DELETE /Agent/{agent_uuid}/Number/{number} -- unassign a number."""
+        await self._http.request(
+            "DELETE", f"{self._prefix}/Agent/{agent_uuid}/Number/{number}"
+        )
+
+
+class SessionResource:
+    """Session history -- list and get agent sessions.
+
+    Sessions are account-scoped (not nested under an agent).
+    Use ``agent_id`` query param to filter by agent.
+
+    Session IDs accept both raw UUIDs and ``as_<uuid>`` prefix format.
+    """
+
+    def __init__(self, http: HttpTransport, prefix: str) -> None:
+        self._http = http
+        self._prefix = prefix
+
+    async def list(self, **params: Any) -> dict:
+        """GET /AgentSession -- paginated list.
+
+        Optional query params: limit, offset, sort_by, sort_order,
+        agent_id, agent_mode, call_uuid, phone_number,
+        ended_at__gte, ended_at__lte, created_at__gte, created_at__lte,
+        duration__gte, duration__lte.
+
+        Returns ``{"api_id": "...", "objects": [...],
+        "meta": {"limit", "offset", "total_count", "previous", "next"}}``.
+        """
+        return await self._http.request(
+            "GET", f"{self._prefix}/AgentSession", params=params
+        )
+
+    async def get(self, session_id: str) -> dict:
+        """GET /AgentSession/{session_id} -- get session details."""
+        return await self._http.request(
+            "GET", f"{self._prefix}/AgentSession/{session_id}"
+        )
+
+
+class AgentClient:
+    """Agent Stack REST client -- attached to AsyncClient as ``client.agent``.
+
+    Sub-resources:
+        .agents   -- Agent CRUD (create/get/list/update/delete)
+        .calls    -- Call management (connect/initiate/dial)
+        .numbers  -- Number assignment (assign/list/unassign)
+        .sessions -- Session history (list/get)
+    """
+
+    def __init__(self, http: HttpTransport) -> None:
+        self._http = http
+        prefix = f"/v1/Account/{http.auth_id}"
+        self.agents = AgentResource(http, prefix)
+        self.calls = CallResource(http, prefix)
+        self.numbers = NumberResource(http, prefix)
+        self.sessions = SessionResource(http, prefix)

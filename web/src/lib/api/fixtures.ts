@@ -27,6 +27,7 @@ import type {
   Usage,
   Voice,
 } from "./schemas";
+import { VOICE_CATALOG } from "@/lib/live/voices";
 
 /**
  * Demo dataset for the mock adapter.
@@ -232,10 +233,10 @@ export const agents: Agent[] = [
 ];
 
 export const agentVersions: AgentVersion[] = [
-  { id: "vr12", version: 12, label: "Added Tamil greeting variant", author: "Copilot", createdAt: ago(2 * MINUTE), isLive: true },
+  { id: "vr12", version: 12, label: "Added Tamil greeting variant", author: "Swara", createdAt: ago(2 * MINUTE), isLive: true },
   { id: "vr11", version: 11, label: "Address spelling confirmation", author: "Rohan S", createdAt: ago(5 * HOUR), isLive: false },
   { id: "vr10", version: 10, label: "Shiprocket timeout 900ms", author: "Rohan S", createdAt: ago(2 * DAY), isLive: false },
-  { id: "vr9", version: 9, label: "Escalation queue → support_l2", author: "Copilot", createdAt: ago(4 * DAY), isLive: false },
+  { id: "vr9", version: 9, label: "Escalation queue → support_l2", author: "Swara", createdAt: ago(4 * DAY), isLive: false },
 ];
 
 export const knowledgeDocs: KnowledgeDoc[] = [
@@ -410,7 +411,7 @@ export const complaints: Complaint[] = [
   { id: "c6", ref: "#48150", title: "Damaged product, video proof shared", category: "Damage", severity: "critical", stage: "escalated", customerName: "Imran Shaikh", phone: "+919812345678", openedAt: ago(1.2 * DAY), slaDueAt: ago(35 * MINUTE), assignee: "Rohan S", callId: "48150", hasRecording: true, hasConsent: true },
   { id: "c7", ref: "#48141", title: "Charged twice for one order", category: "Billing", severity: "high", stage: "escalated", customerName: "Rahul Nair", phone: "+918899001122", openedAt: ago(1.6 * DAY), slaDueAt: ahead(4 * HOUR), assignee: "Rohan S", callId: "48141", hasRecording: true, hasConsent: false },
   { id: "c8", ref: "#48122", title: "Refund processed and confirmed", category: "Billing", severity: "medium", stage: "resolved", customerName: "Neha Sharma", phone: "+919012345527", openedAt: ago(3 * DAY), slaDueAt: ago(2.6 * DAY), assignee: "Rohan S", callId: "48122", hasRecording: true, hasConsent: true },
-  { id: "c9", ref: "#48119", title: "Reschedule confirmed by customer", category: "Delay", severity: "low", stage: "resolved", customerName: "Priya Menon", phone: "+919876542214", openedAt: ago(3.4 * DAY), slaDueAt: ago(3 * DAY), assignee: "Copilot", callId: "48119", hasRecording: true, hasConsent: true },
+  { id: "c9", ref: "#48119", title: "Reschedule confirmed by customer", category: "Delay", severity: "low", stage: "resolved", customerName: "Priya Menon", phone: "+919876542214", openedAt: ago(3.4 * DAY), slaDueAt: ago(3 * DAY), assignee: "Swara", callId: "48119", hasRecording: true, hasConsent: true },
   { id: "c10", ref: "#48101", title: "Missing invoice for GST claim", category: "Billing", severity: "low", stage: "resolved", customerName: "Vikram Iyer", phone: "+917788112233", openedAt: ago(4 * DAY), slaDueAt: ago(3.5 * DAY), assignee: "Rohan S", callId: "48101", hasRecording: false, hasConsent: true },
 ];
 
@@ -517,14 +518,28 @@ export const customers: Customer[] = [
 
 /* ── Voice studio ───────────────────────────────────────────────────────── */
 
-export const voices: Voice[] = [
-  { id: "v_ananya", name: "Ananya", language: "hi", descriptor: "warm, unhurried", gender: "female", assignedTo: "Delivery reschedule", pace: 0.55, formality: 0.45, warmth: 0.78, latencyMs: 310, cloned: false },
-  { id: "v_karthik", name: "Karthik", language: "ta", descriptor: "brisk, confident", gender: "male", assignedTo: "Lead qualification", pace: 0.72, formality: 0.4, warmth: 0.52, latencyMs: 295, cloned: false },
-  { id: "v_meera", name: "Meera", language: "hinglish", descriptor: "calm, patient", gender: "female", assignedTo: "Grievance intake", pace: 0.35, formality: 0.6, warmth: 0.88, latencyMs: 288, cloned: false },
-  { id: "v_arnav", name: "Arnav", language: "en", descriptor: "neutral, professional", gender: "male", assignedTo: "Order status lookup", pace: 0.5, formality: 0.75, warmth: 0.5, latencyMs: 271, cloned: false },
-  { id: "v_founder", name: "Rohan (cloned)", language: "hinglish", descriptor: "founder voice, 40s of audio", gender: "male", assignedTo: null, pace: 0.5, formality: 0.35, warmth: 0.66, latencyMs: 334, cloned: true },
-  { id: "v_lakshmi", name: "Lakshmi", language: "te", descriptor: "bright, friendly", gender: "female", assignedTo: null, pace: 0.6, formality: 0.42, warmth: 0.71, latencyMs: 302, cloned: false },
-];
+const MOCK_ASSIGNED: Record<string, string> = {
+  Aoede: "Grievance intake",
+  Puck: "Lead qualification",
+  Orus: "Order status lookup",
+  Kore: "Delivery reschedule",
+};
+
+export const voices: Voice[] = VOICE_CATALOG.map((v) => ({
+  id: `${v.id}_demo`,
+  name: v.personaName,
+  liveName: v.name,
+  language: "hinglish",
+  descriptor: v.descriptor,
+  gender: v.gender,
+  style: v.style,
+  character: v.character,
+  bestFor: v.bestFor,
+  personaName: v.personaName,
+  promptTemplate: v.promptTemplate,
+  assignedTo: MOCK_ASSIGNED[v.name] ?? null,
+  assignedAgentId: null,
+}));
 
 export const scriptTests: ScriptTest[] = [
   {

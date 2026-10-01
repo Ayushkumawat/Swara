@@ -113,17 +113,19 @@ export async function POST(request: Request) {
     // what puts a browser test call on the Live board and, once completed,
     // into minutes, tokens and cost. A reconnect reuses its row via `callId`.
     // Sessions started before login (the onboarding test call) book against
-    // the demo org rather than being invisible.
-    const activeCallId =
-      callId ??
-      startCall({
-        orgId: user?.orgId ?? "org_demo",
-        agentId,
-        agentName: prompt.name,
-        intent: PERSONA_INTENT[agentId] ?? prompt.intent ?? "other",
-        source: "browser",
-      });
-    if (!callId && !prompt.setupTools) {
+    // the demo org rather than being invisible. A voice preview is the one
+    // exception: ten seconds of "hi, this is Riya" is not a call.
+    const activeCallId = prompt.preview
+      ? ""
+      : (callId ??
+        startCall({
+          orgId: user?.orgId ?? "org_demo",
+          agentId,
+          agentName: prompt.name,
+          intent: PERSONA_INTENT[agentId] ?? prompt.intent ?? "other",
+          source: "browser",
+        }));
+    if (activeCallId && !callId && !prompt.setupTools) {
       const { captureRecordingConsent } = await import("@/lib/server/tickets");
       captureRecordingConsent(orgId, activeCallId);
     }

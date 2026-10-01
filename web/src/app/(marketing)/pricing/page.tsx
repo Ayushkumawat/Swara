@@ -20,7 +20,7 @@ const COMPARISON: { feature: string; starter: boolean | string; growth: boolean 
   { feature: "Concurrent calls", starter: "25", growth: "150", scale: "500" },
   { feature: "Indian languages + Hinglish", starter: true, growth: true, scale: true },
   { feature: "Node-graph flow builder", starter: true, growth: true, scale: true },
-  { feature: "AI copilot flow editing", starter: true, growth: true, scale: true },
+  { feature: "Swara builds and edits agents by chat", starter: true, growth: true, scale: true },
   { feature: "Knowledge base grounding", starter: "1 source", growth: "Unlimited", scale: "Unlimited" },
   { feature: "Live listen and take over", starter: false, growth: true, scale: true },
   { feature: "Calendar booking", starter: true, growth: true, scale: true },

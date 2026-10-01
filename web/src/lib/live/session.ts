@@ -14,6 +14,7 @@
 
 import { GoogleGenAI, type LiveServerMessage, type Session } from "@google/genai";
 import { AudioPlayer, MicCapture, fromBase64 } from "./audio";
+import { ASYNC_TOOL_SCHEDULING, isAsyncTool } from "./config";
 
 export type LiveStatus =
   | "idle"
@@ -61,6 +62,12 @@ export type LiveSessionParams = {
   agentId: string;
   voice?: string;
   languages?: string[];
+  /**
+   * Speaker only: no microphone, and the session ends by itself once the
+   * agent's first turn has finished playing. Used by Voice Studio's preview,
+   * where the agent introduces itself and nobody is meant to answer.
+   */
+  listenOnly?: boolean;
 };
 
 type TokenResponse = {
@@ -76,6 +83,11 @@ type Control =
   | { kind: "handoff"; agentId: string; agentName: string; summary: string }
   | { kind: "end"; outcome: string }
   | { kind: "transfer"; phone: string; name: string };
+
+/** Background tools say when their result may be spoken; blocking ones don't. */
+function schedulingFor(name: string | undefined) {
+  return isAsyncTool(name) ? { scheduling: ASYNC_TOOL_SCHEDULING } : {};
+}
 
 export class LiveVoiceSession {
   private session: Session | null = null;
@@ -120,14 +132,18 @@ export class LiveVoiceSession {
       // what produced "Requested device not found" on Linux Chrome —
       // PulseAudio treats the output context as exclusive, and the user
       // gesture has also expired by the time we ask for the input.
-      try {
-        await this.mic.start({
-          onAudio: (base64) => this.sendAudio(base64),
-          onLevel: (level) => this.events.onMicLevel(level),
-        });
-      } catch (micError) {
-        const message = micError instanceof Error ? micError.message : String(micError);
-        this.events.onMicUnavailable?.(this.explain(message));
+      if (this.params.listenOnly) {
+        this.events.onMicUnavailable?.("listen only");
+      } else {
+        try {
+          await this.mic.start({
+            onAudio: (base64) => this.sendAudio(base64),
+            onLevel: (level) => this.events.onMicLevel(level),
+          });
+        } catch (micError) {
+          const message = micError instanceof Error ? micError.message : String(micError);
+          this.events.onMicUnavailable?.(this.explain(message));
+        }
       }
 
       // Created after the mic is held, then resumed explicitly: getUserMedia
@@ -272,6 +288,9 @@ export class LiveVoiceSession {
 
     if (content.turnComplete) {
       this.pendingRole = null;
+      // A preview is one turn long: the agent introduces itself and the
+      // session closes once that audio has drained.
+      if (this.params.listenOnly && this.endingOutcome === null) this.endingOutcome = "preview";
       // end_call / handoff take effect at the end of the turn that called
       // them, so the bridge sentence ("connecting you to...") is heard.
       if (this.endingOutcome !== null) void this.finishAfterAudio();
@@ -303,11 +322,11 @@ export class LiveVoiceSession {
           if (__control) this.applyControl(__control as Control);
           this.events.onToolResult?.(call.name ?? "tool", result);
 
-          return { id: call.id, name: call.name, response: spoken };
+          return { id: call.id, name: call.name, response: spoken, ...schedulingFor(call.name) };
         } catch {
           // The model is mid-sentence waiting on this. An error payload it can
           // apologise from beats a hung turn.
-          return { id: call.id, name: call.name, response: { error: "Tool unreachable" } };
+          return { id: call.id, name: call.name, response: { error: "Tool unreachable" }, ...schedulingFor(call.name) };
         }
       }),
     );

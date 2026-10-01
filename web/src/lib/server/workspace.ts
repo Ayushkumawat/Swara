@@ -1,6 +1,6 @@
 import "server-only";
 import { getDb, nowIso, uid } from "./db";
-import { VOICE_CATALOG } from "@/lib/live/voices";
+import { VOICE_CATALOG, voiceByName } from "@/lib/live/voices";
 import { GENERAL_DEPARTMENT, suggestedDepartmentsFor } from "@/lib/agents/departments";
 
 /**
@@ -97,8 +97,14 @@ export function publicPlaybook(orgId: string) {
 }
 
 export function voices(orgId: string) {
-  return (db().prepare("SELECT * FROM voices WHERE org_id=? ORDER BY name").all(orgId) as Row[]).map(
-    (r) => ({
+  // Catalog order (hand-tuned first), not alphabetical, and nothing the API
+  // cannot hear: no pace/warmth numbers, no latency, no "cloned".
+  const order = new Map(VOICE_CATALOG.map((v, i) => [v.name, i]));
+  const rows = db().prepare("SELECT * FROM voices WHERE org_id=?").all(orgId) as Row[];
+  rows.sort((a, b) => (order.get(a.live_name as string) ?? 99) - (order.get(b.live_name as string) ?? 99));
+  return rows.map((r) => {
+    const catalog = voiceByName(r.live_name as string);
+    return {
       id: r.id as string,
       name: r.name as string,
       liveName: r.live_name as string,
@@ -110,17 +116,14 @@ export function voices(orgId: string) {
       descriptor: r.descriptor as string,
       gender: r.gender as string,
       style: r.style as string,
+      character: catalog.character,
+      bestFor: catalog.bestFor,
       personaName: r.persona_name as string,
       promptTemplate: r.prompt_template as string,
       assignedTo: assignedName(orgId, r.assigned_agent_id as string | null),
       assignedAgentId: (r.assigned_agent_id as string) ?? null,
-      pace: r.pace as number,
-      formality: r.formality as number,
-      warmth: r.warmth as number,
-      latencyMs: r.latency_ms as number,
-      cloned: Boolean(r.cloned),
-    }),
-  );
+    };
+  });
 }
 
 function assignedName(orgId: string, agentId: string | null) {
@@ -137,9 +140,6 @@ export function updateVoice(
   fields: {
     promptTemplate?: string;
     personaName?: string;
-    pace?: number;
-    formality?: number;
-    warmth?: number;
     assignedAgentId?: string | null;
   },
 ) {
@@ -147,21 +147,27 @@ export function updateVoice(
     | Row
     | undefined;
   if (!current) return { error: "No such voice" } as const;
+  const personaName = (fields.personaName ?? (current.persona_name as string)).trim() || (current.persona_name as string);
   db().prepare(
-    `UPDATE voices SET prompt_template=?, persona_name=?, pace=?, formality=?, warmth=?,
+    `UPDATE voices SET prompt_template=?, persona_name=?, name=?,
        assigned_agent_id=?, updated_at=? WHERE id=? AND org_id=?`,
   ).run(
     fields.promptTemplate ?? current.prompt_template,
-    fields.personaName ?? current.persona_name,
-    fields.pace ?? current.pace,
-    fields.formality ?? current.formality,
-    fields.warmth ?? current.warmth,
+    personaName,
+    personaName,
     fields.assignedAgentId === undefined ? current.assigned_agent_id : fields.assignedAgentId,
     nowIso(),
     id,
     orgId,
   );
   return { error: null } as const;
+}
+
+/** Put every org voice back to its catalog craft and stock name. */
+export function resetVoices(orgId: string) {
+  const d = db();
+  d.prepare("DELETE FROM voices WHERE org_id=?").run(orgId);
+  provisionWorkspace(orgId);
 }
 
 export function transferTargets(orgId: string) {
@@ -479,17 +485,21 @@ export function provisionWorkspace(orgId: string) {
     );
   }
 
-  if (!(d.prepare("SELECT COUNT(*) n FROM voices WHERE org_id=?").get(orgId) as { n: number }).n) {
-    const insert = d.prepare(
-      `INSERT INTO voices (id, org_id, live_name, name, gender, style, descriptor, persona_name, prompt_template, language, pace, formality, warmth, cloned, latency_ms, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 300, ?)`,
+  // Every catalog voice gets a row; voices added to the catalog later are
+  // filled in for existing orgs without touching the ones they have edited.
+  const have = new Set(
+    (d.prepare("SELECT live_name FROM voices WHERE org_id=?").all(orgId) as { live_name: string }[]).map((r) => r.live_name),
+  );
+  const insert = d.prepare(
+    `INSERT INTO voices (id, org_id, live_name, name, gender, style, descriptor, persona_name, prompt_template, language, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'hinglish', ?)`,
+  );
+  for (const v of VOICE_CATALOG) {
+    if (have.has(v.name)) continue;
+    insert.run(
+      `${v.id}_${orgId.slice(-8)}`, orgId, v.name, v.personaName, v.gender, v.style,
+      v.descriptor, v.personaName, v.promptTemplate, now,
     );
-    for (const v of VOICE_CATALOG) {
-      insert.run(
-        `${v.id}_${orgId.slice(-8)}`, orgId, v.name, v.personaName, v.gender, v.style,
-        v.descriptor, v.personaName, v.promptTemplate, v.language, v.pace, v.formality, v.warmth, now,
-      );
-    }
   }
 
   d.prepare(
