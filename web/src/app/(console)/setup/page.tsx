@@ -1,11 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import { ArrowRight, Check, Loader2, Plus, Sparkles, Trash2 } from "lucide-react";
 import { PageHead } from "@/components/chrome/page-head";
 import { Card, CardHead } from "@/components/ui/card";
@@ -16,7 +15,7 @@ import { QueryBoundary, RowsSkeleton } from "@/components/ui/feedback";
 import { ListRow, Mono } from "@/components/ui/table";
 import { Reveal } from "@/components/motion/primitives";
 import { SwaraOrb } from "@/components/agents/build-with-swara";
-import { SwaraChat } from "@/components/agents/swara-chat";
+import { useUi } from "@/lib/ui-store";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { USE_CASES, type SetupArea } from "@/lib/agents/use-cases";
 import {
@@ -48,7 +47,6 @@ export default function SetupPage() {
   const [tab, setTab] = useState<Tab>("playbook");
   const playbook = usePlaybook();
   const status = useSetupStatus();
-  const qc = useQueryClient();
   const openSwara = useUi((s) => s.openSwara);
 
   const useCase = (playbook.data?.useCase ?? "other") as UseCase;
@@ -61,13 +59,6 @@ export default function SetupPage() {
     for (const t of Object.keys(TAB_LABEL) as Tab[]) if (!order.includes(t)) order.push(t);
     return order.map((value) => ({ value, label: TAB_LABEL[value] }));
   }, [profile]);
-
-  const refreshAll = () => {
-    void qc.invalidateQueries({ queryKey: ["setup"] });
-    void qc.invalidateQueries({ queryKey: qk.departments });
-    void qc.invalidateQueries({ queryKey: qk.knowledge });
-    void qc.invalidateQueries({ queryKey: qk.agents });
-  };
 
   return (
     <>
