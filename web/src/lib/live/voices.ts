@@ -107,13 +107,13 @@ const SEEDS: Seed[] = [
 /** Hindi agreement is the first thing a caller hears wrong. Keep it explicit. */
 function genderLine(gender: VoiceGender) {
   return gender === "male"
-    ? `Speak as a man: "main samajh gaya", "bata raha hoon", "karta hoon" — never the feminine forms.`
-    : `Speak as a woman: "main samajh gayi", "bata rahi hoon", "karti hoon" — never the masculine forms.`;
+    ? `Speak strictly with masculine grammar in Hindi/Hinglish ("main samajh gaya", "dekhta hoon", "bata raha hoon", "karta hoon") — never feminine forms.`
+    : `Speak strictly with feminine grammar in Hindi/Hinglish ("main samajh gayi", "dekhti hoon", "bata rahi hoon", "karti hoon") — never masculine forms.`;
 }
 
 function craftFor(s: Seed) {
   const body = s.craft ?? `${s.blurb}. Keep that colour in every sentence without overdoing it.`;
-  return `VOICE — you are ${s.personaName}, a ${s.gender === "male" ? "man" : "woman"}. ${genderLine(s.gender)} ${body}`;
+  return `VOICE — you are ${s.personaName}, a ${s.gender === "male" ? "man" : "woman"}. ${genderLine(s.gender)} ${body} Sound like a real person on the phone: use natural micro-pauses and soft spoken expressions like "ummm...", "ohh...", "hmm...", or "accha..." when thinking or reacting to what the caller says.`;
 }
 
 export const VOICE_CATALOG: VoiceCatalogEntry[] = SEEDS.map((s) => ({

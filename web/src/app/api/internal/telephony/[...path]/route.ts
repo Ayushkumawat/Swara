@@ -109,10 +109,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
 
     let callId = p.callId ?? null;
     // The bridge does not resend the caller's number on a mid-call handoff;
-    // the call row has it. Without it the second agent loses the CALLER
-    // block — who they are and which tickets they already have open.
-    let fromNumber = p.direction === "inbound" ? p.from : undefined;
-    if (!fromNumber && callId && p.handoff) {
+    // the call row has it. For outbound calls (including briefing calls to a
+    // designated person), `p.to` is the remote party on the line.
+    let fromNumber = (p.direction === "inbound" ? p.from : p.to) || undefined;
+    if (!fromNumber && callId) {
       const row = getDb().prepare("SELECT phone, direction FROM calls WHERE id=? AND org_id=?").get(callId, orgId) as
         | { phone: string | null; direction: string }
         | undefined;

@@ -20,6 +20,7 @@ const TOOL_LABEL: Record<string, string> = {
   register_complaint: "Registering complaint",
   lookup_ticket: "Looking up ticket",
   notify_stakeholder: "Notifying the team",
+  update_ticket: "Updating ticket",
   resolve_ticket: "Closing ticket",
   book_slot: "Booking slot",
   search_knowledge: "Searching knowledge base",

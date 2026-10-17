@@ -149,7 +149,7 @@ export function validateFlow(
 export function compileFlow(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  ctx: { agents: { id: string; name: string }[]; allowTransfer?: boolean },
+  ctx: { agents: { id: string; name: string }[]; allowTransfer?: boolean; concise?: boolean },
 ): string {
   if (nodes.length === 0) return "";
   const start = nodes.find((n) => n.kind === "start") ?? nodes[0];
@@ -168,70 +168,104 @@ export function compileFlow(
   visit(start.id);
   for (const n of nodes) if (!seen.has(n.id)) visit(n.id);
 
-  const stepNo = new Map(order.map((n, i) => [n.id, i + 1]));
+  // When the agent already has a tailored role prompt, only surface custom
+  // scripts, notes, and specific branch/handoff/transfer wiring from the
+  // canvas so we do not feed the voice model a second mechanical checklist.
+  if (ctx.concise) {
+    const hints: string[] = [];
+    for (const n of order) {
+      const cfg = nodeConfig(n);
+      const outs = outgoing(edges, n.id);
+      if (n.kind === "start" && cfg.script) {
+        hints.push(`- Opening line: "${cfg.script}"`);
+      } else if (n.kind === "say" && cfg.script) {
+        hints.push(`- At "${n.title}", say: "${cfg.script}"`);
+      } else if ((n.kind === "intent" || n.kind === "branch") && outs.length > 1) {
+        const opts = outs
+          .map((e) => `${e.label || byId.get(e.to)?.title || "otherwise"} → ${byId.get(e.to)?.title ?? "next"}`)
+          .join("; ");
+        hints.push(`- ${n.title}: ${opts}.${cfg.note ? ` ${cfg.note}` : ""}`);
+      } else if (n.kind === "book" && cfg.appointmentType) {
+        hints.push(`- Booking type: "${cfg.appointmentType}".${cfg.note ? ` ${cfg.note}` : ""}`);
+      } else if (n.kind === "escalate" && ctx.allowTransfer !== false && cfg.transferTarget) {
+        hints.push(`- Human transfer desk for "${n.title}": ${cfg.transferTarget}.${cfg.note ? ` ${cfg.note}` : ""}`);
+      } else if (n.kind === "handoff") {
+        const target = ctx.agents.find((a) => a.id === cfg.agentId);
+        if (target) hints.push(`- Hand off to ${target.name} when the caller needs ${n.title.replace(/^Hand off\s*→?\s*/i, "")}.`);
+      } else if (n.kind === "end" && cfg.script) {
+        hints.push(`- Closing line: "${cfg.script}"`);
+      } else if (cfg.note) {
+        hints.push(`- ${n.title}: ${cfg.note}`);
+      }
+    }
+    return hints.length
+      ? ["FLOW NOTES (follow naturally; never read node names aloud):", ...hints].join("\n")
+      : "";
+  }
+
   const ref = (id: string) => {
     const n = byId.get(id);
-    return n ? `step ${stepNo.get(id)} (${n.title})` : "the next step";
+    return n ? `"${n.title}"` : "the next step";
   };
 
   const lines: string[] = [
-    "CALL SHAPE — the order a typical call takes. It is a map, not a script: listen to what the caller actually says, and skip any step that is already satisfied. Never ask for a detail the caller has already given. Never read step names or numbers aloud.",
+    "CALL FLOW — follow this sequence naturally in conversation; skip anything the caller already answered, and never read step titles aloud:",
   ];
 
   for (const n of order) {
     const cfg = nodeConfig(n);
     const outs = outgoing(edges, n.id);
-    const next = outs.length === 1 ? ` Then go to ${ref(outs[0].to)}.` : "";
+    const next = outs.length === 1 ? ` Then move to ${ref(outs[0].to)}.` : "";
     const note = cfg.note ? ` ${cfg.note}` : "";
-    const head = `${stepNo.get(n.id)}. ${n.title}`;
+    const head = `- ${n.title}`;
 
     switch (n.kind) {
       case "start":
-        lines.push(`${head}: open the call in one sentence — your name, where you are calling from or answering for, then an open question or the reason you called.${cfg.script ? ` Say: "${cfg.script}"` : ""} Then stop and listen. Follow the caller's language from their first words.${next}${note}`);
+        lines.push(`${head}: greet naturally with your name and business, then listen.${cfg.script ? ` Opening: "${cfg.script}"` : ""}${next}${note}`);
         break;
       case "say":
-        lines.push(`${head}: say${cfg.script ? `: "${cfg.script}"` : " this in one or two sentences"}.${next}${note}`);
+        lines.push(`${head}: ${cfg.script ? `say "${cfg.script}"` : "share this briefly"}.${next}${note}`);
         break;
       case "collect": {
-        const fields = cfg.fields?.length ? cfg.fields.join(", ") : n.detail || "the details you need";
-        lines.push(`${head}: you need ${fields}. Ask only for what you do not already have, one thing per turn, in a natural sentence that says why. Repeat back numbers and spellings once; do not repeat back anything else.${next}${note}`);
+        const fields = cfg.fields?.length ? cfg.fields.join(", ") : n.detail || "the needed details";
+        lines.push(`${head}: gather ${fields} naturally if not already known.${next}${note}`);
         break;
       }
       case "intent":
       case "branch": {
         if (outs.length === 0) {
-          lines.push(`${head}: decide ${n.detail || "what the caller needs"}.${note}`);
+          lines.push(`${head}: ${n.detail || "understand what the caller needs"}.${note}`);
         } else {
           const opts = outs
             .map((e) => `if ${e.label || byId.get(e.to)?.title || "so"} → ${ref(e.to)}`)
             .join("; ");
-          lines.push(`${head}: ${n.kind === "intent" ? "work out what the caller wants from what they say — ask one open question only if it is not clear" : n.detail || "decide"}: ${opts}.${note}`);
+          lines.push(`${head}: ${opts}.${note}`);
         }
         break;
       }
       case "data_pull":
-        lines.push(`${head}: call ${cfg.tool ?? "the relevant tool"} and answer only from its result. Say one short natural line while it runs ("ek second, dekhti hoon"), not a speech.${next}${note}`);
+        lines.push(`${head}: look up the information before answering.${next}${note}`);
         break;
       case "book":
-        lines.push(`${head}: offer two concrete slots${cfg.appointmentType ? ` for "${cfg.appointmentType}"` : ""}, confirm date, time and location, then call book_slot. Not booked until the tool says so.${next}${note}`);
+        lines.push(`${head}: offer two concrete slots${cfg.appointmentType ? ` for "${cfg.appointmentType}"` : ""} and confirm date, time, and location before booking.${next}${note}`);
         break;
       case "escalate":
         if (ctx.allowTransfer === false) {
-          lines.push(`${head}: there is no human to transfer to. Say that in one sentence, take their name if you do not have it, confirm the number they are calling from is fine for a callback, and do not call transfer_to_human.${note}`);
+          lines.push(`${head}: no human is available for live transfer — let them know warmly and take a callback.${note}`);
           break;
         }
-        lines.push(`${head}: tell the caller you are connecting them${cfg.transferTarget ? ` to ${cfg.transferTarget}` : " to a colleague"}, then call transfer_to_human${cfg.transferTarget ? ` with target_name "${cfg.transferTarget}"` : ""}. This ends your part of the call.${note}`);
+        lines.push(`${head}: let the caller know you are connecting them${cfg.transferTarget ? ` to ${cfg.transferTarget}` : " to a colleague"} and transfer the call.${note}`);
         break;
       case "handoff": {
         const target = ctx.agents.find((a) => a.id === cfg.agentId);
-        lines.push(`${head}: say one sentence that you are passing them to ${target?.name ?? "the right team"}, then call handoff_to_agent with agent_name "${target?.name ?? ""}" and a two-line summary of the call so far. Do not greet again after — the other agent continues.${note}`);
+        lines.push(`${head}: let the caller know in one short sentence that you are connecting them to ${target?.name ?? "the right team"}, then hand off the call.${note}`);
         break;
       }
       case "end":
         lines.push(
           cfg.script
-            ? `${head}: say "${cfg.script}", then call end_call.${cfg.hangUp === false ? " Wait for the caller to hang up." : ""}${note}`
-            : `${head}: this is two turns, never one. First turn: ask only "is there anything else?" and stop. Wait. If they bring up something new, you are not at this step any more. Second turn, only after they say no or say bye: one warm closing sentence, then call end_call.${cfg.hangUp === false ? " Wait for the caller to hang up." : ""}${note}`,
+            ? `${head}: say "${cfg.script}" and end the call.${note}`
+            : `${head}: check if they need anything else; once they are done, say a warm goodbye and end the call.${note}`,
         );
         break;
     }

@@ -52,6 +52,8 @@ export function toolsForRole(input: {
     case "complaint":
       tools.add("register_complaint");
       tools.add("lookup_ticket");
+      tools.add("update_ticket");
+      tools.add("resolve_ticket");
       tools.add("notify_stakeholder");
       tools.add("search_knowledge");
       break;
@@ -69,6 +71,7 @@ export function toolsForRole(input: {
       break;
     default:
       tools.add("search_knowledge");
+      tools.add("lookup_ticket");
       break;
   }
   if (input.canHandoff) tools.add("handoff_to_agent");
@@ -76,26 +79,13 @@ export function toolsForRole(input: {
   return [...tools];
 }
 
-/** When to reach for each tool. Only what the model would not know on its own. */
-const TOOL_LINE: Record<string, string> = {
-  lookup_order: "lookup_order — before stating any order status. Order number if given, else the caller's phone number.",
-  register_complaint: "register_complaint — once you know what happened and have their name; leave phone empty. You have no reference number until it returns one. If it returns possible_duplicate, tell them the open ticket's status and ask if this is the same thing.",
-  lookup_ticket: "lookup_ticket — the moment they mention an earlier complaint or ask for status. No arguments shows every ticket from their number; never ask them for a reference first.",
-  notify_stakeholder: "notify_stakeholder — to push an existing ticket to the desk that owns it.",
-  book_slot: "book_slot — only after they accept one of the slots you offered.",
-  search_knowledge: "search_knowledge — before any policy, fee, timing or process answer. Not there means you do not have it.",
-  transfer_to_human: "transfer_to_human — only to a desk listed under TRANSFER TARGETS, after telling them you are connecting them.",
-  handoff_to_agent: "handoff_to_agent — when the caller's need belongs to another agent. One sentence, then the exact agent name.",
-  end_call: "end_call — after the goodbye, once they have nothing else.",
-};
-
 /**
  * The stored role: only what is specific to this agent's job at this
- * business. Everything true of every phone call — listen first, one question
- * a turn, tools are the only truth, how to end — is added once at call time
+ * business. Everything true of every phone call — natural pauses, one question
+ * a turn, tools as source of truth, how to end — is added once at call time
  * (`CONVERSATION_RULES` in live-prompt.ts), not repeated into every agent.
- * The model already knows how to be polite; telling it eleven ways makes it
- * stilted, and contradictory tone blocks make it confused.
+ * Tool schemas live in `TOOL_DECLARATIONS` so the prompt stays free of
+ * function/parameter syntax that a voice model might read aloud.
  */
 export function buildRolePrompt(input: {
   name: string;
@@ -104,11 +94,11 @@ export function buildRolePrompt(input: {
   intent: string;
   isFrontDoor: boolean;
   direction: string;
-  tools: string[];
+  tools?: string[];
 }): string {
   const body = (input.role ?? "").trim();
   const fallback = input.isFrontDoor
-    ? "Greet, work out in a turn or two who the caller needs, and hand them over with handoff_to_agent. You do not solve the request yourself."
+    ? "Greet, work out in a turn or two who the caller needs, and hand them over to the right team. You do not solve the request yourself."
     : (JOB_HINT[input.intent] ?? JOB_HINT.other);
   const direction =
     input.direction === "outbound" ? "You make outbound calls." : input.direction === "both" ? "You take and make calls." : "You answer inbound calls.";
@@ -118,9 +108,6 @@ export function buildRolePrompt(input: {
     `${job} ${direction}`,
     "",
     body || fallback,
-    "",
-    "TOOLS — the only actions you have",
-    ...input.tools.map((t) => `- ${TOOL_LINE[t] ?? t}`),
   ].join("\n");
 }
 

@@ -25,6 +25,7 @@ import {
   buildLiveConfig,
 } from "@/lib/live/config";
 import { currentUser } from "@/lib/server/auth";
+import { getDb } from "@/lib/server/db";
 import { startCall } from "@/lib/server/repo";
 import { composeLivePrompt } from "@/lib/server/live-prompt";
 
@@ -33,6 +34,8 @@ const BodySchema = z.object({
   agentId: z.string().min(1),
   voice: z.string().optional(),
   languages: z.array(z.string()).max(12).optional(),
+  /** Simulated caller number for testing customer memory or designated-staff callbacks. */
+  fromNumber: z.string().max(32).optional(),
   /** Present when the client is reconnecting and wants its context back. */
   resumeHandle: z.string().optional(),
   /** The call row this session belongs to; sent on reconnects so a dropped
@@ -66,11 +69,18 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-  const { agentId, voice, resumeHandle, callId } = parsed.data;
+  const { agentId, voice, fromNumber, resumeHandle, callId } = parsed.data;
 
   const user = await currentUser().catch(() => null);
   const orgId = user?.orgId ?? "org_demo";
-  const prompt = composeLivePrompt(orgId, agentId, voice);
+  let effectiveFrom = fromNumber?.trim() || undefined;
+  if (!effectiveFrom && callId) {
+    const existing = getDb()
+      .prepare("SELECT phone FROM calls WHERE id=? AND org_id=?")
+      .get(callId, orgId) as { phone: string | null } | undefined;
+    if (existing?.phone && existing.phone !== "unknown") effectiveFrom = existing.phone;
+  }
+  const prompt = composeLivePrompt(orgId, agentId, voice, { fromNumber: effectiveFrom });
   // Swara has a fixed voice; every other agent takes what the caller picked.
   const voiceName = prompt.setupTools
     ? prompt.voice
@@ -124,6 +134,7 @@ export async function POST(request: Request) {
           agentName: prompt.name,
           intent: PERSONA_INTENT[agentId] ?? prompt.intent ?? "other",
           source: "browser",
+          phone: effectiveFrom,
         }));
     if (activeCallId && !callId && !prompt.setupTools) {
       const { captureRecordingConsent } = await import("@/lib/server/tickets");

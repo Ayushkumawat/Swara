@@ -112,6 +112,7 @@ function CallPanelBody({
   const [voice, setVoice] = useState(
     fixedVoice ?? LIVE_VOICES.find((v) => v.name === initialVoice)?.name ?? LIVE_VOICES[0].name,
   );
+  const [fromNumber, setFromNumber] = useState("");
   const [draft, setDraft] = useState("");
   const [savingVoice, setSavingVoice] = useState(false);
   const savedVoice = initialVoice && LIVE_VOICES.some((v) => v.name === initialVoice) ? initialVoice : undefined;
@@ -141,7 +142,15 @@ function CallPanelBody({
         {idle ? (
           <>
             {intro}
-            {fixedVoice ? null : <Setup voice={voice} onVoice={setVoice} savedVoice={savedVoice} />}
+            {fixedVoice ? null : (
+              <Setup
+                voice={voice}
+                onVoice={setVoice}
+                savedVoice={savedVoice}
+                fromNumber={fromNumber}
+                onFromNumber={setFromNumber}
+              />
+            )}
             {!fixedVoice && onUseVoice ? (
               <div className="mt-3 flex items-center justify-between gap-3 rounded-[12px] border border-hairline bg-white/[0.03] px-3 py-2">
                 <p className="text-[11.5px] leading-snug text-t3">
@@ -212,7 +221,15 @@ function CallPanelBody({
             size="lg"
             variant="primary"
             full
-            onClick={() => void live.start({ agentId, agentName, voice: fixedVoice ?? voice, languages })}
+            onClick={() =>
+              void live.start({
+                agentId,
+                agentName,
+                voice: fixedVoice ?? voice,
+                languages,
+                fromNumber: fromNumber.trim() || undefined,
+              })
+            }
           >
             <Mic className="size-4" />
             {startLabel ?? "Start call"}
@@ -223,9 +240,32 @@ function CallPanelBody({
   );
 }
 
-function Setup({ voice, onVoice, savedVoice }: { voice: string; onVoice: (v: string) => void; savedVoice?: string }) {
+function Setup({
+  voice,
+  onVoice,
+  savedVoice,
+  fromNumber,
+  onFromNumber,
+}: {
+  voice: string;
+  onVoice: (v: string) => void;
+  savedVoice?: string;
+  fromNumber: string;
+  onFromNumber: (v: string) => void;
+}) {
   return (
     <div>
+      <div className="mb-3">
+        <label className="mb-1 block text-[11.5px] font-medium text-t2">
+          Caller number <span className="font-normal text-t3">(optional — simulate a customer or designated staff desk)</span>
+        </label>
+        <input
+          value={fromNumber}
+          onChange={(e) => onFromNumber(e.target.value)}
+          placeholder="e.g. +91 98765 43210 or a transfer desk number"
+          className="glass w-full rounded-[11px] px-3 py-1.5 font-[family-name:var(--font-mono)] text-[12px] text-t1 outline-none placeholder:font-sans placeholder:text-t3"
+        />
+      </div>
       <div className="mb-2 flex items-baseline justify-between">
         <span className="text-[11.5px] font-medium text-t2">Voice</span>
         <span className="text-[10.5px] text-t3">{LIVE_VOICES.length} voices · hear each in Voice studio</span>

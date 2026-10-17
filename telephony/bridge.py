@@ -325,8 +325,8 @@ async def dial() -> Response:
     try:
         client = _plivo()
         kwargs: dict[str, Any] = dict(
-            from_=from_number.replace("+", ""),
-            to_=to.replace("+", ""),
+            from_=_e164_digits(from_number),
+            to_=_e164_digits(to),
             answer_url=answer_url,
             answer_method="POST",
             hangup_url=_public_http("/plivo/hangup"),
@@ -789,15 +789,25 @@ async def handoff_after_drain(call: Call, plivo_ws: Any, reconnect: asyncio.Even
     reconnect.set()
 
 
+def _e164_digits(raw: str) -> str:
+    """Plivo requires country-prefixed digits without '+'. Default 10-digit numbers to +91."""
+    digits = "".join(ch for ch in (raw or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"91{digits}"
+    if len(digits) == 11 and digits.startswith("0"):
+        return f"91{digits[1:]}"
+    return digits
+
+
 async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any]) -> None:
     if plivo_ws is not None:
         await drain(call, plivo_ws)
-    to = str(control.get("phone", "")).replace(" ", "")
+    to = _e164_digits(str(control.get("phone", "")))
     if not (call.plivo_uuid and to):
         return
     call.bridged = True
     call.ending = True
-    url = _public_http_abs("/plivo/transfer?" + urlencode({"to": to.replace("+", ""), "callerId": PLIVO_FROM_NUMBER.replace("+", "")}))
+    url = _public_http_abs("/plivo/transfer?" + urlencode({"to": to, "callerId": _e164_digits(PLIVO_FROM_NUMBER)}))
     try:
         client = _plivo()
         await asyncio.to_thread(client.calls.transfer, call.plivo_uuid, legs="aleg", aleg_url=url, aleg_method="GET")
@@ -883,8 +893,8 @@ async def takeover_call(call: Call, phone: str) -> None:
     await asyncio.to_thread(client.calls.transfer, call.plivo_uuid, legs="aleg", aleg_url=url, aleg_method="GET")
     await asyncio.to_thread(
         client.calls.create,
-        from_=PLIVO_FROM_NUMBER.replace("+", ""),
-        to_=phone.replace("+", ""),
+        from_=_e164_digits(PLIVO_FROM_NUMBER),
+        to_=_e164_digits(phone),
         answer_url=url,
         answer_method="GET",
     )

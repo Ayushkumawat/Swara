@@ -33,7 +33,9 @@ export function lookupTickets(
 
   const rows = getDb()
     .prepare(
-      `SELECT c.*, d.name dept_name FROM complaints c
+      `SELECT c.*, d.name dept_name,
+         (SELECT a.detail FROM actions a WHERE a.complaint_id=c.id AND a.org_id=c.org_id LIMIT 1) action_detail
+       FROM complaints c
        LEFT JOIN departments d ON d.id=c.department_id
        WHERE c.org_id=?
        ORDER BY c.opened_at DESC LIMIT 50`,
@@ -60,11 +62,13 @@ function toTicket(r: Row) {
     ref: r.ref as string,
     kind: ((r.kind as string) || "complaint") as TicketKind,
     title: r.title as string,
+    detail: ((r.action_detail as string) || "").trim(),
     category: r.category as string,
     severity: r.severity as string,
     stage: r.stage as string,
     customerName: r.customer_name as string,
     phone: r.phone as string,
+    assignee: (r.assignee as string) ?? null,
     department: (r.dept_name as string) ?? null,
     departmentId: (r.department_id as string) ?? null,
     openedAt: r.opened_at as string,
@@ -175,6 +179,18 @@ export function tagCampaignContact(orgId: string, callId: string, campaignId: st
 export function matchStaffContact(orgId: string, phone?: string, email?: string) {
   const d = digits(phone ?? "");
   const em = (email ?? "").trim().toLowerCase();
+  const depts = getDb()
+    .prepare("SELECT id, name, slug, keywords, email, phone, whatsapp FROM departments WHERE org_id=?")
+    .all(orgId) as {
+    id: string;
+    name: string;
+    slug: string;
+    keywords: string;
+    email: string | null;
+    phone: string | null;
+    whatsapp: string | null;
+  }[];
+
   const targets = transferTargets(orgId);
   const hit = targets.find((t) => {
     if (d && digits(t.phone) === d) return true;
@@ -182,17 +198,28 @@ export function matchStaffContact(orgId: string, phone?: string, email?: string)
     if (d && digits(t.whatsapp ?? "") === d) return true;
     return false;
   });
-  if (hit) return { kind: "desk" as const, ...hit };
+  if (hit) {
+    let departmentId = hit.departmentId;
+    let department = hit.department;
+    if (!departmentId) {
+      const hay = `${hit.name} ${hit.role} ${hit.whenToUse}`.toLowerCase();
+      const inferred = depts.find((dept) => {
+        if (hay.includes(dept.name.toLowerCase()) || hay.includes(dept.slug.toLowerCase())) return true;
+        try {
+          const kw = JSON.parse(dept.keywords || "[]") as string[];
+          return kw.some((k) => k.length > 2 && hay.includes(k.toLowerCase()));
+        } catch {
+          return false;
+        }
+      });
+      if (inferred) {
+        departmentId = inferred.id;
+        department = inferred.name;
+      }
+    }
+    return { kind: "desk" as const, ...hit, departmentId, department };
+  }
 
-  const depts = getDb()
-    .prepare("SELECT id, name, email, phone, whatsapp FROM departments WHERE org_id=?")
-    .all(orgId) as {
-    id: string;
-    name: string;
-    email: string | null;
-    phone: string | null;
-    whatsapp: string | null;
-  }[];
   const dept = depts.find((x) => {
     if (d && x.phone && digits(x.phone) === d) return true;
     if (em && (x.email ?? "").toLowerCase() === em) return true;
@@ -219,7 +246,9 @@ export function openTicketsForDepartment(orgId: string, departmentId: string) {
   return (
     getDb()
       .prepare(
-        `SELECT c.*, d.name dept_name FROM complaints c
+        `SELECT c.*, d.name dept_name,
+           (SELECT a.detail FROM actions a WHERE a.complaint_id=c.id AND a.org_id=c.org_id LIMIT 1) action_detail
+         FROM complaints c
          LEFT JOIN departments d ON d.id=c.department_id
          WHERE c.org_id=? AND c.department_id=? AND c.stage!='resolved'
          ORDER BY c.opened_at DESC LIMIT 12`,
@@ -228,19 +257,89 @@ export function openTicketsForDepartment(orgId: string, departmentId: string) {
   ).map(toTicket);
 }
 
+/**
+ * All tickets relevant to a designated person or department desk:
+ *  - tickets in their department,
+ *  - tickets explicitly assigned to them or notified to their phone/email/whatsapp,
+ *  - or (for a general escalation desk with no single department) all open tickets in the workspace.
+ */
+export function ticketsForStaff(
+  orgId: string,
+  staff: NonNullable<ReturnType<typeof matchStaffContact>>,
+  includeResolved = false,
+) {
+  const rows = getDb()
+    .prepare(
+      `SELECT c.*, d.name dept_name,
+         (SELECT a.detail FROM actions a WHERE a.complaint_id=c.id AND a.org_id=c.org_id LIMIT 1) action_detail
+       FROM complaints c
+       LEFT JOIN departments d ON d.id=c.department_id
+       WHERE c.org_id=? ${includeResolved ? "" : "AND c.stage!='resolved'"}
+       ORDER BY c.opened_at DESC LIMIT 40`,
+    )
+    .all(orgId) as Row[];
+
+  const staffPhone = digits(staff.phone);
+  const staffWa = digits(staff.whatsapp ?? "");
+  const staffEmail = (staff.email ?? "").trim().toLowerCase();
+  const notifiedIds = new Set(
+    (
+      getDb()
+        .prepare("SELECT complaint_id, to_address FROM ticket_messages WHERE org_id=? AND direction='out'")
+        .all(orgId) as { complaint_id: string; to_address: string | null }[]
+    )
+      .filter((m) => {
+        const addr = (m.to_address ?? "").trim();
+        if (!addr) return false;
+        if (staffPhone && digits(addr) === staffPhone) return true;
+        if (staffWa && digits(addr) === staffWa) return true;
+        if (staffEmail && addr.toLowerCase() === staffEmail) return true;
+        return false;
+      })
+      .map((m) => m.complaint_id),
+  );
+
+  const staffName = staff.name.toLowerCase();
+  const staffRole = staff.role.toLowerCase();
+  const scoped = rows.filter((r) => {
+    if (staff.departmentId && r.department_id === staff.departmentId) return true;
+    if (notifiedIds.has(String(r.id))) return true;
+    const assignee = String(r.assignee ?? "").toLowerCase();
+    if (assignee && (assignee.includes(staffName) || staffName.includes(assignee) || assignee.includes(staffRole))) {
+      return true;
+    }
+    return false;
+  });
+
+  // If this designated person is a general escalation desk (not tied to a
+  // single department) or has no scoped tickets yet, show the workspace's open
+  // tickets so they can inspect, update, or close any complaint they call about.
+  const picked = scoped.length > 0 || staff.departmentId ? scoped : rows;
+  return picked.slice(0, 12).map(toTicket);
+}
+
 export function staffCallbackBlock(orgId: string, fromPhone: string) {
   const staff = matchStaffContact(orgId, fromPhone);
   if (!staff) return "";
-  const deptId = staff.departmentId;
-  const open = deptId ? openTicketsForDepartment(orgId, deptId) : lookupTickets(orgId, { phone: fromPhone });
+  const open = ticketsForStaff(orgId, staff, false);
   const lines = open.length
-    ? open.map((t) => `- ${t.ref} (${t.kind}, ${t.stage}): ${t.title} — ${t.customerName}`).join("\n")
-    : "- none open";
+    ? open
+        .map(
+          (t) =>
+            `- ${t.ref} (${t.kind}, stage: ${t.stage.replace("_", " ")}, severity: ${t.severity}${t.department ? `, dept: ${t.department}` : ""}): "${t.title}"${t.detail ? ` — ${t.detail}` : ""} — customer ${t.customerName} (${t.phone})`,
+        )
+        .join("\n")
+    : "- no open tickets right now";
   return [
-    `STAFF CALLBACK: this caller is ${staff.name} (${staff.role}${staff.department ? `, ${staff.department}` : ""}). They are calling from a registered desk/department number.`,
-    "They are reporting back on work you assigned. Open tickets for them:",
+    `DESIGNATED STAFF CALLER: this caller is ${staff.name} (${staff.role}${staff.department ? `, ${staff.department} department` : ""}), calling from a registered staff/desk number.`,
+    `Treat ${staff.name} as a colleague, not a customer. Greet them by name and do not ask for their name or phone number.`,
+    `Tickets currently in their field of view:`,
     lines,
-    "When they confirm a ticket is handled, call resolve_ticket with that reference. Do not file a new complaint unless they have a new issue.",
+    `How to handle their call:`,
+    `- If they ask about complaints in their queue or ask for details on a specific reference, read the details clearly (or call lookup_ticket if they mention another reference).`,
+    `- If they share a progress update, inspection note, ETA, or ask to mark a ticket in progress or escalated without closing it yet, call update_ticket with the reference number, stage, and their note.`,
+    `- When they confirm a ticket is resolved/completed, call resolve_ticket with that reference number and a brief note of what was done.`,
+    `- Do not file a new customer complaint unless they explicitly ask to log a fresh incident.`,
   ].join("\n");
 }
 
@@ -294,7 +393,7 @@ export function resolveTicket(
     .prepare("SELECT id FROM actions WHERE complaint_id=? AND org_id=?")
     .all(ticket.id, orgId) as { id: string }[];
   for (const a of actions) updateAction(orgId, a.id, "done", args.closedBy ?? "agent");
-  getDb().prepare("UPDATE complaints SET stage='resolved' WHERE id=? AND org_id=?").run(ticket.id, orgId);
+  updateComplaintStage(orgId, ticket.id, "resolved");
   addTicketMessage({
     orgId,
     complaintId: ticket.id,
@@ -304,6 +403,57 @@ export function resolveTicket(
     closedTicket: true,
   });
   return { resolved: true, reference_number: ticket.ref, title: ticket.title };
+}
+
+export function updateTicket(
+  orgId: string,
+  args: { reference?: string; stage?: string; note?: string; updatedBy?: string },
+) {
+  if (args.stage === "resolved") {
+    return resolveTicket(orgId, {
+      reference: args.reference,
+      note: args.note,
+      closedBy: args.updatedBy,
+    });
+  }
+  const hits = lookupTickets(orgId, { reference: args.reference });
+  const ticket = hits[0];
+  if (!ticket) return { error: "No ticket with that reference." as const };
+
+  const nextStage =
+    args.stage === "escalated"
+      ? "escalated"
+      : args.stage === "in_progress"
+        ? "in_progress"
+        : ticket.stage === "new"
+          ? "in_progress"
+          : ticket.stage;
+
+  if (nextStage !== ticket.stage) {
+    updateComplaintStage(orgId, ticket.id, nextStage);
+  }
+  const actions = getDb()
+    .prepare("SELECT id FROM actions WHERE complaint_id=? AND org_id=? AND status='open'")
+    .all(ticket.id, orgId) as { id: string }[];
+  for (const a of actions) updateAction(orgId, a.id, "in_progress", args.updatedBy ?? "agent");
+
+  const body = (args.note ?? "").trim() || `Stage updated to ${nextStage.replace("_", " ")}.`;
+  addTicketMessage({
+    orgId,
+    complaintId: ticket.id,
+    direction: "in",
+    channel: "note",
+    fromAddress: args.updatedBy,
+    body,
+    closedTicket: false,
+  });
+  return {
+    updated: true,
+    reference_number: ticket.ref,
+    title: ticket.title,
+    stage: nextStage,
+    note_saved: body,
+  };
 }
 
 export async function notifyTicket(
@@ -412,10 +562,11 @@ export function ingestInboundReply(params: {
 
   for (const org of orgs) {
     const staff = matchStaffContact(org.id, params.from, params.from);
-    const tickets = lookupTickets(org.id, {
-      reference: refHit?.[1],
-      phone: params.from,
-    });
+    const tickets = refHit?.[1]
+      ? lookupTickets(org.id, { reference: refHit[1], phone: params.from })
+      : staff
+        ? ticketsForStaff(org.id, staff, false)
+        : lookupTickets(org.id, { phone: params.from });
     const ticket = tickets[0];
     if (!ticket) continue;
     addTicketMessage({

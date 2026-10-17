@@ -106,25 +106,12 @@ export const TOKEN_SESSION_START_TTL_MS = 2 * 60 * 1000;
 /**
  * Tools that run in the background while the agent keeps talking.
  *
- * On 3.1 every tool call blocked: the agent went silent until the order
- * system answered. On 3.8 a `NON_BLOCKING` declaration lets the model say
- * "ek second, dekhti hoon" and carry on; the result is folded in according
- * to the scheduling the client attaches to the response (`WHEN_IDLE` — wait
- * for the caller to stop talking, which is right for every lookup here).
- *
- * The three control tools stay blocking on purpose. `end_call` and
- * `handoff_to_agent` change what happens at the end of the turn, and
- * `transfer_to_human` dials a desk; none of them should be racing audio.
+ * Kept empty by default: our DB and connector tools resolve in milliseconds,
+ * and marking fast tools `NON_BLOCKING` causes the model to speak a filler
+ * turn first and then immediately fire a second `WHEN_IDLE` turn when the
+ * response lands 15ms later — which makes the voice model repeat itself.
  */
-export const ASYNC_TOOLS = new Set([
-  "lookup_order",
-  "register_complaint",
-  "lookup_ticket",
-  "notify_stakeholder",
-  "resolve_ticket",
-  "book_slot",
-  "search_knowledge",
-]);
+export const ASYNC_TOOLS = new Set<string>([]);
 
 /** Scheduling attached to a NON_BLOCKING tool's response. Ignored for the rest. */
 export const ASYNC_TOOL_SCHEDULING = FunctionResponseScheduling.WHEN_IDLE;
@@ -160,7 +147,7 @@ const DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "register_complaint",
     description:
-      "File a ticket for the caller's problem. You have NO reference number and nothing is registered until this returns registered:true — never say 'noted', 'registered' or any number before that. If it returns possible_duplicate, the caller already has an open ticket for something similar: read them its status, ask if this is the same issue, and call again with confirm_new:true only if they say it is different.",
+      "File a ticket for the caller's problem. You have no reference number until this tool returns one — never invent a number before calling it. If the result indicates an existing open ticket for a similar problem, tell the caller its status and ask if this is the same issue; only call again with confirm_new set to true if they confirm it is a different problem.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -190,7 +177,7 @@ const DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "lookup_ticket",
     description:
-      "Look up the caller's tickets (enquiry, complaint or grievance). Call this whenever they ask for status, quote a number like #48213, or say they already complained. With no arguments it finds every ticket filed from the number they are calling on — so you never need to ask for a reference number first.",
+      "Look up tickets (enquiry, complaint or grievance). Call this whenever a caller or staff member asks for ticket details or status, quotes a reference like #48213, or asks what tickets are open. With no arguments it finds tickets for the caller's number (or for a staff desk's field of view).",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -216,14 +203,32 @@ const DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
+    name: "update_ticket",
+    description:
+      "Update an existing ticket's stage (in_progress, escalated, or resolved) or log a progress note/field update from a designated person or department desk.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reference_number: { type: Type.STRING, description: "Ticket reference number, e.g. #48213" },
+        stage: {
+          type: Type.STRING,
+          enum: ["in_progress", "escalated", "resolved"],
+          description: "New stage for the ticket if changing status",
+        },
+        note: { type: Type.STRING, description: "Progress update, ETA, findings, or action taken" },
+      },
+      required: ["reference_number", "note"],
+    },
+  },
+  {
     name: "resolve_ticket",
     description:
-      "Mark a ticket done. Use when a registered department or desk calls or writes back confirming they have handled it. Never mark done just because the original caller hangs up.",
+      "Mark a ticket resolved/closed. Use when a registered department or designated person confirms they have handled and completed the work. Never mark done just because the original customer hangs up.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         reference_number: { type: Type.STRING },
-        note: { type: Type.STRING, description: "What the desk confirmed" },
+        note: { type: Type.STRING, description: "What the desk confirmed was done to resolve it" },
       },
       required: ["reference_number"],
     },

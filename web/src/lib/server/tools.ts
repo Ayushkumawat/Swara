@@ -6,7 +6,17 @@ import { agentSummary } from "./live-prompt";
 import { NODE_KIND_LABEL } from "@/lib/agents/flow";
 import { VOICE_CATALOG, voiceByName } from "@/lib/live/voices";
 import { guessGender } from "@/lib/agents/role";
-import { notifyTicket, lookupTickets, registerTicket, resolveTicket } from "./tickets";
+import {
+  addTicketMessage,
+  lookupTickets,
+  matchStaffContact,
+  notifyTicket,
+  registerTicket,
+  resolveTicket,
+  ticketsForStaff,
+  updateComplaintStage,
+  updateTicket,
+} from "./tickets";
 import {
   appointmentTypes,
   logToolInvocation,
@@ -68,8 +78,10 @@ async function runTool(
       return lookupTicketTool(orgId, callId, args);
     case "notify_stakeholder":
       return notifyTicketTool(orgId, callId, args);
+    case "update_ticket":
+      return updateTicketTool(orgId, callId, args);
     case "resolve_ticket":
-      return resolveTicketTool(orgId, args);
+      return resolveTicketTool(orgId, callId, args);
     case "book_slot":
       return bookSlot(orgId, args);
     case "search_knowledge": {
@@ -82,7 +94,7 @@ async function runTool(
         : { found: false, note: "Nothing in this agent's knowledge. Say you don't have this detail. Do not guess, and do not use another team's policy." };
     }
     case "transfer_to_human":
-      return transferHuman(orgId, args);
+      return transferHuman(orgId, callId, args);
     case "handoff_to_agent":
       return handoffToAgent(orgId, callId, args);
     case "end_call":
@@ -247,7 +259,7 @@ function findAgent(orgId: string, ref: string | undefined) {
 }
 
 const CALL_TOOL_NAMES = new Set([
-  "lookup_order", "register_complaint", "lookup_ticket", "notify_stakeholder", "resolve_ticket",
+  "lookup_order", "register_complaint", "lookup_ticket", "notify_stakeholder", "update_ticket", "resolve_ticket",
   "book_slot", "search_knowledge", "transfer_to_human", "handoff_to_agent", "end_call",
 ]);
 
@@ -512,22 +524,31 @@ async function registerComplaint(orgId: string, callId: string | null, args: Rec
 
 function lookupTicketTool(orgId: string, callId: string | null, args: Record<string, unknown>) {
   const reference = str(args.reference_number) ?? str(args.reference);
-  const phone = str(args.phone) ?? (reference ? undefined : callPhone(orgId, callId));
+  const callerPhone = callPhone(orgId, callId);
+  const staff = callerPhone ? matchStaffContact(orgId, callerPhone) : null;
+  const phone = str(args.phone) ?? (reference || staff ? undefined : callerPhone);
+
   let hits = lookupTickets(orgId, {
     reference,
     customerName: str(args.customer_name),
     phone,
   });
+  // If a designated staff member calls lookup_ticket without a reference,
+  // return the tickets in their department / field of view.
+  if (!hits.length && staff && !reference) {
+    hits = ticketsForStaff(orgId, staff, true);
+  }
   // A wrong-by-one reference or a misheard name should not dead-end the
   // caller when the phone they are on identifies them.
-  if (!hits.length) {
-    const byPhone = callPhone(orgId, callId);
-    if (byPhone) hits = lookupTickets(orgId, { phone: byPhone });
+  if (!hits.length && !staff && callerPhone) {
+    hits = lookupTickets(orgId, { phone: callerPhone });
   }
   if (!hits.length) {
     return {
       found: false,
-      note: "No ticket for this caller — not by that reference, and none filed from the number they are calling from. Say so plainly; do not suggest their complaint is 'still updating'. Offer to file it now.",
+      note: staff
+        ? "No matching ticket found in the queue for that reference."
+        : "No ticket for this caller — not by that reference, and none filed from the number they are calling from. Say so plainly; do not suggest their complaint is 'still updating'. Offer to file it now.",
     };
   }
   const t = hits[0];
@@ -537,17 +558,21 @@ function lookupTicketTool(orgId: string, callId: string | null, args: Record<str
     reference_number: t.ref,
     kind: t.kind,
     title: t.title,
+    detail: t.detail || undefined,
+    severity: t.severity,
+    category: t.category,
     stage: t.stage,
     status_in_words: stageWord,
     customer_name: t.customerName,
+    customer_phone: staff ? t.phone : undefined,
     department: t.department,
     opened_at: t.openedAt,
     matches: hits.length,
-    others: hits.slice(1, 4).map((o) => ({ reference_number: o.ref, title: o.title, stage: o.stage })),
+    others: hits.slice(1, 5).map((o) => ({ reference_number: o.ref, title: o.title, stage: o.stage, customer_name: o.customerName })),
     note:
       t.stage === "resolved"
         ? "This ticket is already marked done. Tell the caller that and ask if a new issue came up."
-        : `Routed to ${t.department ?? "the team"}. Status: ${stageWord}.${hits.length > 1 ? ` They have ${hits.length} tickets — ask which one they mean if unclear.` : ""}`,
+        : `Routed to ${t.department ?? "the team"}. Status: ${stageWord}.${hits.length > 1 ? ` There are ${hits.length} matching tickets.` : ""}`,
   };
 }
 
@@ -566,11 +591,24 @@ async function notifyTicketTool(orgId: string, callId: string | null, args: Reco
   });
 }
 
-function resolveTicketTool(orgId: string, args: Record<string, unknown>) {
+function updateTicketTool(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const callerPhone = callPhone(orgId, callId);
+  const staff = callerPhone ? matchStaffContact(orgId, callerPhone) : null;
+  return updateTicket(orgId, {
+    reference: str(args.reference_number) ?? str(args.reference),
+    stage: str(args.stage),
+    note: str(args.note),
+    updatedBy: str(args.updated_by) ?? staff?.name ?? "agent",
+  });
+}
+
+function resolveTicketTool(orgId: string, callId: string | null, args: Record<string, unknown>) {
+  const callerPhone = callPhone(orgId, callId);
+  const staff = callerPhone ? matchStaffContact(orgId, callerPhone) : null;
   return resolveTicket(orgId, {
     reference: str(args.reference_number) ?? str(args.reference),
     note: str(args.note),
-    closedBy: str(args.closed_by) ?? "agent",
+    closedBy: str(args.closed_by) ?? staff?.name ?? "agent",
   });
 }
 
@@ -610,7 +648,7 @@ async function bookSlot(orgId: string, args: Record<string, unknown>) {
   };
 }
 
-function transferHuman(orgId: string, args: Record<string, unknown>) {
+function transferHuman(orgId: string, callId: string | null, args: Record<string, unknown>) {
   if (playbook(orgId).extra.humanEscalation === false) {
     return {
       error: "The owner said there is no human to transfer to. Say that, take a name and callback number, and do not offer a transfer.",
@@ -622,18 +660,63 @@ function transferHuman(orgId: string, args: Record<string, unknown>) {
       error: "No transfer desk is configured. Take a callback number and say someone will call them back. Do not invent a person.",
     };
   }
-  const asked = String(args.target_name ?? "").toLowerCase();
+  const asked = String(args.target_name ?? "").toLowerCase().trim();
+  const reason = String(args.reason ?? "").trim();
+  const search = `${asked} ${reason.toLowerCase()}`;
   const target =
-    (asked && targets.find((t) => t.name.toLowerCase().includes(asked) || t.role.toLowerCase().includes(asked))) ||
+    (asked &&
+      targets.find(
+        (t) =>
+          t.name.toLowerCase().includes(asked) ||
+          t.role.toLowerCase().includes(asked) ||
+          (t.department ?? "").toLowerCase().includes(asked) ||
+          t.whenToUse.toLowerCase().includes(asked),
+      )) ||
+    targets.find(
+      (t) =>
+        (t.department && search.includes(t.department.toLowerCase())) ||
+        search.includes(t.role.toLowerCase()),
+    ) ||
     targets[0];
+
+  if (callId) {
+    getDb()
+      .prepare("UPDATE calls SET outcome='escalated' WHERE id=? AND org_id=?")
+      .run(callId, orgId);
+    // Link any open ticket from this call or caller to the designated person
+    // so it appears in their field of view when they follow up or call back.
+    const callerPhone = callPhone(orgId, callId);
+    const openTicket = (
+      getDb()
+        .prepare("SELECT id FROM complaints WHERE org_id=? AND call_id=? AND stage!='resolved' ORDER BY opened_at DESC LIMIT 1")
+        .get(orgId, callId) as { id: string } | undefined
+    ) ?? (callerPhone ? lookupTickets(orgId, { phone: callerPhone }).find((t) => t.stage !== "resolved") : undefined);
+
+    if (openTicket) {
+      getDb()
+        .prepare(
+          "UPDATE complaints SET assignee=?, department_id=COALESCE(department_id, ?) WHERE id=? AND org_id=?",
+        )
+        .run(target.name, target.departmentId ?? null, openTicket.id, orgId);
+      updateComplaintStage(orgId, openTicket.id, "escalated");
+      addTicketMessage({
+        orgId,
+        complaintId: openTicket.id,
+        direction: "out",
+        channel: "call",
+        toAddress: target.phone,
+        body: `Call warm-transferred to ${target.name} (${target.role})${reason ? `: ${reason}` : ""}.`,
+      });
+    }
+  }
+
   return {
     transferred: true,
     to: target.name,
     role: target.role,
-    phone: target.phone,
     hours: target.hours,
-    reason: String(args.reason ?? ""),
-    note: `Tell the caller you are connecting them to ${target.name}, ${target.role}. Do not read the full number unless they ask.`,
+    reason,
+    note: `Tell the caller in one short sentence that you are connecting them to ${target.name} (${target.role}), then stop speaking while the call bridges.`,
     // On a phone leg the bridge dials this number and drops out; in the
     // browser test bench it is shown as a caption.
     __control: { kind: "transfer", phone: target.phone, name: target.name },

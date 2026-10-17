@@ -62,6 +62,8 @@ export type LiveSessionParams = {
   agentId: string;
   voice?: string;
   languages?: string[];
+  /** Optional caller phone number to simulate returning-customer or designated-staff context. */
+  fromNumber?: string;
   /**
    * Speaker only: no microphone, and the session ends by itself once the
    * agent's first turn has finished playing. Used by Voice Studio's preview,
@@ -186,6 +188,7 @@ export class LiveVoiceSession {
         agentId: this.params.agentId,
         voice: this.params.voice,
         languages: this.params.languages,
+        fromNumber: this.params.fromNumber,
         resumeHandle: this.resumeHandle ?? undefined,
         callId: this.callId ?? undefined,
       }),

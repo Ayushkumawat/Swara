@@ -63,7 +63,7 @@ export function composeLivePrompt(
     | undefined;
 
   const builtin = agentPrompt(agentId);
-  const rawRole = stored?.prompt || builtin?.systemInstruction || defaultRole(stored?.name ?? "this line");
+  const rawRole = stripToolDump(stored?.prompt) || builtin?.role || defaultRole(stored?.name ?? "this line");
 
   // Who the agent says it is. The owner's choice first; an agent that was
   // simply named after a person ("Aarav") uses that; only then the voice's
@@ -105,7 +105,12 @@ export function composeLivePrompt(
 
   const nodes = safeJson<FlowNode[]>(stored?.nodes, []);
   const edges = safeJson<FlowEdge[]>(stored?.edges, []);
-  const flow = compileFlow(nodes, edges, { agents: siblings, allowTransfer: transfers.length > 0 });
+  const hasCustomRole = Boolean(stored?.prompt?.trim() || builtin?.role);
+  const flow = compileFlow(nodes, edges, {
+    agents: siblings,
+    allowTransfer: transfers.length > 0,
+    concise: hasCustomRole,
+  });
 
   // Only agents reachable from this flow's handoff nodes, or — for a
   // prompt-only agent — every sibling, so the model never names an agent that
@@ -119,25 +124,17 @@ export function composeLivePrompt(
     book.transferPolicy ? `TRANSFER POLICY: ${book.transferPolicy}` : "",
     book.bookingPolicy ? `BOOKING POLICY: ${book.bookingPolicy}` : "",
     departments.length
-      ? `DEPARTMENTS that own follow-up: ${departments
-          .map((d) => {
-            const bits = [d.name];
-            if (d.email) bits.push(`email ${d.email}`);
-            if (d.phone) bits.push(`phone ${d.phone}`);
-            if (d.whatsapp) bits.push(`whatsapp ${d.whatsapp}`);
-            return bits.join(", ");
-          })
-          .join("; ")}.`
+      ? `DEPARTMENTS that own follow-up: ${departments.map((d) => d.name).join(", ")}.`
       : "",
     transfers.length
       ? [
-          "TRANSFER TARGETS — these are the only humans you may offer. When transferring, call transfer_to_human with their name.",
+          "TRANSFER TARGETS — the only human colleagues/desks you may transfer a call to:",
           ...transfers.map(
             (t) =>
-              `- ${t.name} (${t.role}, ${t.phone}${t.email ? `, email ${t.email}` : ""}${t.whatsapp ? `, whatsapp ${t.whatsapp}` : ""}${t.hours ? `, ${t.hours}` : ""}): ${t.whenToUse}`,
+              `- ${t.name} (${t.role}${t.department ? `, ${t.department}` : ""}${t.hours ? `, ${t.hours}` : ""}): ${t.whenToUse}`,
           ),
         ].join("\n")
-      : "TRANSFER: no human desk is configured. Do not offer a transfer. Take a callback number and say someone will call back.",
+      : "TRANSFER: no human desk is configured. Do not offer a live transfer; take a callback instead.",
     slots.length
       ? [
           "APPOINTMENT TYPES you may book — never invent a type or a time outside these hours:",
@@ -149,13 +146,16 @@ export function composeLivePrompt(
       : "",
     directory.length
       ? [
-          "AGENT DIRECTORY — other agents of this business you may hand a caller to with handoff_to_agent. Use the exact name.",
+          "AGENT DIRECTORY — other specialist agents of this business you may hand a caller to (use the exact name):",
           ...directory.map((s) => `- ${s.name}: ${agentSummary(s.prompt, s.intent)}`),
         ].join("\n")
-      : "HANDOFF: you are the only agent. Do not call handoff_to_agent.",
+      : "HANDOFF: you are the only agent. Handle the call here without handing off.",
   ]
     .filter(Boolean)
     .join("\n\n");
+
+  const staffBlock = extras?.fromNumber ? staffCallbackBlock(orgId, extras.fromNumber) : "";
+  const isStaffCaller = Boolean(staffBlock);
 
   const storedTools = safeJson<string[]>(stored?.tools ?? undefined, []);
   const baseTools = storedTools.length
@@ -178,22 +178,29 @@ export function composeLivePrompt(
     if (n.kind === "end") return ["end_call"];
     return [];
   });
-  const tools = [...new Set([...baseTools, ...flowTools, "end_call"])].filter((t) =>
+  // When a designated person or department desk calls in (or is called),
+  // ensure ticket inspection, update, and resolution tools are always active.
+  const staffTools = isStaffCaller ? ["lookup_ticket", "update_ticket", "resolve_ticket"] : [];
+  const tools = [...new Set([...baseTools, ...flowTools, ...staffTools, "end_call"])].filter((t) =>
     t === "transfer_to_human" ? transfers.length > 0 : t === "handoff_to_agent" ? directory.length > 0 : true,
   );
 
+  const greetingText = (builtin?.greeting ?? `${persona} speaking. How can I help?`)
+    .split(NAME_PLACEHOLDER)
+    .join(persona);
+
   return {
     name: stored?.name ?? builtin?.name ?? "Agent",
-    greeting: builtin?.greeting ?? `${persona} speaking. How can I help?`,
+    greeting: greetingText,
     intent: stored?.intent ?? builtinIntent(agentId),
     voice: catalog.name,
     setupTools: false,
     tools,
     systemInstruction: [
       extras?.briefing ? `OUTBOUND BRIEFING (do this job, then offer to take questions):\n${extras.briefing}` : "",
-      extras?.fromNumber ? staffCallbackBlock(orgId, extras.fromNumber) : "",
-      extras?.fromNumber ? callerBlock(orgId, extras.fromNumber) : "",
-      `Your name on this call is ${persona}${book.businessType ? `, from ${book.businessType}` : ""}. Say it once, in your opening line.`,
+      staffBlock,
+      !isStaffCaller && extras?.fromNumber ? callerBlock(orgId, extras.fromNumber) : "",
+      `Your name on this call is ${persona}${book.businessType ? `, from ${book.businessType}` : ""}.`,
       voiceBlock,
       role,
       CONVERSATION_RULES,
@@ -211,15 +218,23 @@ export function composeLivePrompt(
  * Everything that is true of every call, said once, here — not in each
  * agent's role. Short on purpose: the model knows how to hold a
  * conversation, and the things worth spelling out are the ones a phone
- * agent gets wrong in ways that cost a customer. Each line earns its place.
+ * agent gets wrong in ways that cost a customer.
  */
 const CONVERSATION_RULES = [
-  "ON THE CALL",
-  "You are a person on the desk, not a menu. Understand what the caller wants before you collect anything, and never ask for something they already said. One question per turn; ask for a detail at the moment you need it.",
-  "Read back only numbers, spellings and slots, once. If you missed something, ask for that one thing again rather than repeating yourself. Do not re-introduce yourself or restart the greeting mid-call. Do not say you are an AI unless asked; if asked, say yes and carry on.",
-  "Lookups run in the background: say a short \"ek second\" and keep talking naturally; when the result arrives, use it. Nothing about orders, tickets, slots or reference numbers is true until a tool returned it this call — never say a complaint is registered or read a number before then, and never invent, round or 'example' one. If a tool fails or finds nothing, say so plainly and offer the next honest step.",
-  "Ending: when the matter is handled, ask one short \"anything else?\" and wait. Only after they say no do you say goodbye — one sentence, then end_call. Never the question and the goodbye in the same breath.",
+  "VOICE CONVERSATION",
+  "You are speaking live on a phone call, not writing text or chat. Keep your turns conversational and concise (one or two sentences), listen before collecting details, and never ask for something the caller already told you.",
+  "Sound genuinely human: use natural brief pauses and soft vocal expressions like \"ummm...\", \"ohh...\", \"hmm...\", or \"accha...\" to show empathy, thought, or understanding. Keep your Hindi/Hinglish verb endings strictly matched to your voice's gender.",
+  "Never speak internal markers ([CALL_CONNECTED], [CALL_RECONNECTED], [HANDOFF: ...]), JSON keys, tool names, parameter names, or step numbers out loud.",
+  "When you receive [HANDOFF: ...], a colleague has just passed this caller to you mid-call: do not repeat the recording disclosure or re-introduce the company from scratch, and never read the summary word-for-word — greet warmly in one short phrase and continue right from where they left off.",
+  "Nothing about orders, tickets, slots or reference numbers is true until your tool returns it on this call — never invent or guess one. Read back reference numbers, phone numbers, and booked slots once to confirm.",
+  "When the caller's need is handled, check if they need anything else and wait for their answer; once they say no or say goodbye, close warmly in one sentence and end the call.",
 ].join("\n");
+
+/** Strip any legacy "TOOLS — the only actions you have" block from saved roles. */
+function stripToolDump(prompt: string | null | undefined) {
+  if (!prompt) return "";
+  return prompt.replace(/\n*TOOLS — the only actions you have[\s\S]*$/i, "").trim();
+}
 
 /** What we already know about the person on the line, so the agent does not ask for it — including the tickets they already have open. */
 function callerBlock(orgId: string, fromNumber: string) {
@@ -242,20 +257,20 @@ function callerBlock(orgId: string, fromNumber: string) {
   };
 
   const lines = [
-    `CALLER: they are calling from ${fromNumber}. You already have their number — do not ask for it. If you need a callback number, ask only "is this number fine to call back on?"`,
+    `CALLER: they are calling from ${fromNumber}. You already have their number — do not ask for it. If you need a callback number, just confirm whether this number is fine to call back on.`,
     name ? `Your records show this number belongs to ${name}. Use the name naturally; confirm it only if the voice or context suggests someone else.` : "You do not know their name yet. Ask for it only when you need it to file or book something, not as an opener.",
   ];
   if (open.length) {
     lines.push(
       `THEY HAVE CALLED BEFORE. Open tickets from this number:`,
       ...open.map((t) => `  - ${t.ref} · ${t.kind} · "${t.title}" · ${stageWord(t.stage)} · opened ${when(t.openedAt)}${t.department ? ` · with ${t.department}` : ""}`),
-      `If they start describing something that sounds like one of these, say so before anything else — in their language, something like: "you already filed ${open[0].ref} about this ${when(open[0].openedAt)} — is this the same thing, or something new?" Give them the status. Do not file a second ticket for the same problem — if they want it pushed, use notify_stakeholder on the existing reference.`,
-      `If it is genuinely a different problem, file it normally (register_complaint with confirm_new true). One person can have several tickets for different things; the same problem gets one.`,
-      `If they ask "what happened to my complaint" you already know — answer from this list, do not ask them for a reference number.`,
+      `If they start describing something that sounds like one of these, mention it naturally in their language — tell them ${open[0].ref} is already open from ${when(open[0].openedAt)}, share its status, and ask if this is the same issue or something new. Do not file a duplicate ticket for the same problem; if they want the team nudged, notify the desk on the existing reference.`,
+      `Only if they confirm it is a different problem should you file a separate ticket.`,
+      `If they ask what happened to their complaint, answer directly from this list without asking them for a reference number.`,
     );
   } else if (closed.length) {
     lines.push(
-      `They have called before. Their last ticket ${closed[0].ref} ("${closed[0].title}") is closed, ${when(closed[0].openedAt)}. If they say the same thing happened again, that is a new ticket — mention the old one in one line and file fresh.`,
+      `They have called before. Their last ticket ${closed[0].ref} ("${closed[0].title}") is closed, ${when(closed[0].openedAt)}. If they say the same thing happened again, mention the old one briefly and file a fresh ticket.`,
     );
   }
   return lines.join("\n");
