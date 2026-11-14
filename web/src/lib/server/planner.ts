@@ -7,8 +7,9 @@ import { createAgent, updateAgent } from "./repo";
 import { ingestKnowledgeDoc } from "./ai";
 import { AGENT_LANGUAGES, FIRST_NAMES, buildRolePrompt, defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
 import { VOICE_CATALOG } from "@/lib/live/voices";
-import { appointmentTypes, playbook, setupStatus, transferTargets } from "./workspace";
+import { appointmentTypes, playbook, setupStatus, teams, transferTargets } from "./workspace";
 import { TEXT_MODELS } from "./models";
+import { HUMAN_MODES, canConnectLive, informsAfterCall, type HumanMode } from "@/lib/agents/human-mode";
 
 /**
  * Swara's planning brain.
@@ -28,7 +29,8 @@ import { TEXT_MODELS } from "./models";
 
 type Shape = {
   summary: string;
-  questions: string[];
+  /** What Swara would still ask, each with answers the owner can tap. */
+  questions: { question: string; suggestions?: string[] }[];
   agents: {
     key: string;
     name: string;
@@ -45,6 +47,8 @@ type Shape = {
     direction: "inbound" | "outbound" | "both";
     handsOffTo: string[];
     isFrontDoor: boolean;
+    /** What this agent does when a call needs a person. */
+    humanMode?: HumanMode;
   }[];
 };
 
@@ -52,7 +56,10 @@ export type PlanContext = {
   orgId: string;
   playbook: ReturnType<typeof playbook>;
   departments: { name: string; keywords: string[] }[];
-  transfers: { name: string; role: string }[];
+  /** The people of the business, and how each can be reached. */
+  transfers: { name: string; role: string; calls: boolean; email: boolean }[];
+  /** A team with a shared inbox can be informed even with no person listed. */
+  teamInbox: boolean;
   appointmentTypes: { name: string }[];
   knowledgeDocs: number;
   existingAgents: { id: string; name: string; intent: string }[];
@@ -60,14 +67,13 @@ export type PlanContext = {
 
 export function planContext(orgId: string): PlanContext {
   const d = getDb();
+  const allTeams = teams(orgId);
   return {
     orgId,
     playbook: playbook(orgId),
-    departments: (d.prepare("SELECT name, keywords FROM departments WHERE org_id=?").all(orgId) as {
-      name: string;
-      keywords: string;
-    }[]).map((r) => ({ name: r.name, keywords: JSON.parse(r.keywords || "[]") as string[] })),
-    transfers: transferTargets(orgId).map((t) => ({ name: t.name, role: t.role })),
+    departments: allTeams.map((t) => ({ name: t.name, keywords: t.keywords })),
+    transfers: transferTargets(orgId).map((t) => ({ name: t.name, role: t.role, calls: t.contactCalls, email: t.contactEmail })),
+    teamInbox: allTeams.some((t) => t.email || t.phone),
     appointmentTypes: appointmentTypes(orgId).map((a) => ({ name: a.name })),
     knowledgeDocs: setupStatus(orgId).knowledge,
     existingAgents: (d.prepare("SELECT id, name, intent FROM agents WHERE org_id=?").all(orgId) as {
@@ -95,6 +101,7 @@ export async function planAgents(
   if (ctx.playbook.extra.humanEscalation === false || ownerSaidNoHumans(`${brief}\n${ctx.playbook.transferPolicy}`)) {
     ctx.playbook.extra.humanEscalation = false;
     ctx.transfers = [];
+    ctx.teamInbox = false;
   }
 
   const shape = await geminiShape(brief, ctx);
@@ -105,10 +112,22 @@ export async function planAgents(
   }
   const source = shape.source;
   const agents = materialise(shape, ctx);
+  const questions = shape.questions
+    .map((q) => ({
+      question: String(q.question ?? "").trim(),
+      suggestions: (q.suggestions ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 4),
+    }))
+    .filter((q) => q.question)
+    .slice(0, 3);
 
   const gaps: string[] = [];
-  if (agents.some((a) => a.needs.includes("transfers")) && ctx.transfers.length === 0 && ctx.playbook.extra.humanEscalation !== false) {
-    gaps.push("No human transfer desk yet — transfer steps will take callbacks until one is added.");
+  const humansAllowed = ctx.playbook.extra.humanEscalation !== false;
+  const callTakers = ctx.transfers.filter((t) => t.calls).length;
+  const reachable = ctx.transfers.length > 0 || ctx.teamInbox;
+  if (humansAllowed && !reachable && agents.some((a) => a.humanMode !== "never")) {
+    gaps.push("No people listed yet — agents will take a callback note and nobody is told until you add a person in Workspace setup.");
+  } else if (humansAllowed && callTakers === 0 && agents.some((a) => canConnectLive(a.humanMode))) {
+    gaps.push("Nobody listed takes calls — agents cannot connect a caller live; the person is informed after the call instead.");
   }
   if (agents.some((a) => a.needs.includes("appointments")) && ctx.appointmentTypes.length === 0) {
     gaps.push("No appointment types yet — the booking agent cannot offer slots.");
@@ -124,7 +143,8 @@ export async function planAgents(
   return {
     brief,
     summary: shape.summary,
-    questions: shape.questions.slice(0, 3),
+    questions: questions.map((q) => q.question),
+    questionOptions: Object.fromEntries(questions.filter((q) => q.suggestions.length).map((q) => [q.question, q.suggestions])),
     gaps,
     agents,
     source,
@@ -143,9 +163,13 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
     `USE CASE: ${String(ctx.playbook.extra.useCase ?? "other")}`,
     `HOURS: ${ctx.playbook.hours || "(unknown)"}`,
     `OUTBOUND SALES WANTED: ${ctx.playbook.extra.hasSales ? "yes" : "no/unknown"}`,
-    `HUMAN ESCALATION AVAILABLE: ${ctx.playbook.extra.humanEscalation === false ? "no" : ctx.transfers.length ? "yes" : "unknown"}`,
-    `DEPARTMENTS: ${ctx.departments.map((d) => d.name).join(", ") || "none"}`,
-    `TRANSFER DESKS: ${ctx.transfers.map((t) => `${t.name} (${t.role})`).join(", ") || "none"}`,
+    `PEOPLE AVAILABLE: ${ctx.playbook.extra.humanEscalation === false ? "no" : ctx.transfers.length ? "yes" : "unknown"}`,
+    `PEOPLE: ${
+      ctx.transfers
+        .map((t) => `${t.name} (${t.role}; ${t.calls && t.email ? "takes calls and email" : t.calls ? "takes calls" : "email only — cannot be put on a call"})`)
+        .join(", ") || "none"
+    }`,
+    `TEAMS (optional; none is normal for a small business): ${ctx.departments.map((d) => d.name).join(", ") || "none"}`,
     `BOOKABLE: ${ctx.appointmentTypes.map((a) => a.name).join(", ") || "none"}`,
     `KNOWLEDGE DOCS: ${ctx.knowledgeDocs}`,
     `EXISTING AGENTS: ${ctx.existingAgents.map((a) => a.name).join(", ") || "none"}`,
@@ -164,7 +188,7 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
           "- If there are 3+ inbound agents, add one 'front door' agent (intent other, inbound, isFrontDoor true) whose only job is to greet and hand off.",
           "- handsOffTo lists the keys of other agents in THIS plan the agent may pass a caller to.",
           "- Outbound agents (reminders, lead follow-up, collections) are direction outbound and are never front door.",
-          "- questions: at most 3 things you would still ask the owner before going live. Empty if the brief is clear.",
+          "- questions: at most 3 things you would still ask the owner before going live — only ones whose answer would change an agent. Empty if the brief is clear. Each is one plain question about one fact, with 2-4 suggestions: short likely answers written the way the owner would say them ('Yes, to me on my mobile', 'No, just take a message'). Leave suggestions empty when the answer is a name, a number or an address. Never ask for something WORKSPACE already shows.",
           "- job: one sentence, the job title in prose.",
           "- personaName: the first name this agent uses on the call. If the brief says 'introduces itself as X' or names the agent after a person (e.g. 'Aarav'), use exactly that. Otherwise pick a common Indian first name that fits the voice's gender. Two agents in one plan must not share a name.",
           "- voice: one of VOICES AVAILABLE, by name. If the brief names a voice for the agent, use it. Otherwise: complaints and grievances get a calm or soft voice; sales and reminders get a brighter one; a front door gets a crisp one. The gender must match personaName.",
@@ -172,7 +196,9 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
           "- Do NOT put general phone manners in the role — no 'listen first', 'one question at a time', 'don't ask twice', 'be polite', 'never invent facts', how to say goodbye, language handling, or anything about tools. The agent already gets all of that separately; repeating it makes it stilted. No headings, no bullet points, no numbered lists.",
           "- A front door agent's role is 2-4 sentences: the opening line, how it works out who the caller needs, and that it hands over rather than solving or collecting details. Only propose one when there are 3+ inbound agents for it to route to.",
           "- knowledge: only facts the owner actually gave that THIS agent must quote (policy, fees, hours, what to say). Empty string if none. Do not invent prices or policies. Do not copy another agent's facts into this one.",
-          "- If HUMAN ESCALATION is no, or there is no transfer desk, no agent may transfer to a person. They take a callback instead.",
+          "- humanMode: what this agent does when a call needs a person. 'live' = connects the caller to a person on the same call. 'after' = takes the details down; the right person is told automatically when the call ends. 'both' = connects live when it is needed and the rest is passed on after the call. 'never' = handles it alone. Follow the brief: an agent that 'only notes complaints and the owner is told later' or 'just books appointments and emails me' is 'after'; one where 'the manager joins the call' is 'live' or 'both'. If the brief does not say: 'both' when someone in PEOPLE takes calls, 'after' when the people are email only, 'never' when PEOPLE AVAILABLE is no. Agents in one plan may differ.",
+          "- If PEOPLE AVAILABLE is no, every agent is 'never' and nobody is transferred to or mentioned. If nobody in PEOPLE takes calls, no agent may be 'live'. Do not write 'I will transfer you' into the role of an agent that is 'after' or 'never' — it says the right person will be informed and will get back to them.",
+          "- Do not invent teams or departments. If TEAMS is none, write roles that do not mention departments.",
           "- Every agent follows the caller's language automatically. Do not assign a single language.",
           "- Prefer Indian context: Hinglish callers, COD, DND rules for outbound.",
           "",
@@ -188,7 +214,17 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
             type: Type.OBJECT,
             properties: {
               summary: { type: Type.STRING },
-              questions: { type: Type.ARRAY, items: { type: Type.STRING } },
+              questions: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    question: { type: Type.STRING },
+                    suggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  },
+                  required: ["question", "suggestions"],
+                },
+              },
               agents: {
                 type: Type.ARRAY,
                 items: {
@@ -205,8 +241,9 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
                     direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
                     handsOffTo: { type: Type.ARRAY, items: { type: Type.STRING } },
                     isFrontDoor: { type: Type.BOOLEAN },
+                    humanMode: { type: Type.STRING, enum: [...HUMAN_MODES] },
                   },
-                  required: ["key", "name", "job", "role", "knowledge", "personaName", "voice", "intent", "direction", "handsOffTo", "isFrontDoor"],
+                  required: ["key", "name", "job", "role", "knowledge", "personaName", "voice", "intent", "direction", "handsOffTo", "isFrontDoor", "humanMode"],
                 },
               },
             },
@@ -220,7 +257,10 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
       return {
         source: "gemini",
         summary: parsed.summary ?? "",
-        questions: parsed.questions ?? [],
+        // Older prompts returned bare strings; accept both.
+        questions: (Array.isArray(parsed.questions) ? parsed.questions : []).map((q) =>
+          typeof q === "string" ? { question: q, suggestions: [] } : q,
+        ),
         agents: parsed.agents.slice(0, 8).map((a) => {
           const handsOffTo = (a.handsOffTo ?? []).filter((k) => keys.has(k) && k !== a.key);
           return {
@@ -231,6 +271,7 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
             // not to help anyone. That flag only means something with
             // siblings behind it.
             isFrontDoor: Boolean(a.isFrontDoor) && handsOffTo.length > 0,
+            humanMode: resolveMode(a.humanMode, ctx),
           };
         }),
       };
@@ -239,6 +280,26 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
     }
   }
   return null;
+}
+
+/**
+ * The setting an agent is created with. The model's reading of the brief
+ * stands, within what the workspace can actually do: no people at all means
+ * "never" only if the owner ruled people out — otherwise the intent is kept
+ * so that adding a person later just works, and the runtime holds the agent
+ * to whoever is really listed on the day of the call.
+ */
+function resolveMode(proposed: unknown, ctx: PlanContext): HumanMode {
+  if (ctx.playbook.extra.humanEscalation === false) return "never";
+  const emailOnly = ctx.transfers.length > 0 && !ctx.transfers.some((t) => t.calls);
+  const mode = (HUMAN_MODES as readonly string[]).includes(String(proposed))
+    ? (proposed as HumanMode)
+    : emailOnly
+      ? "after"
+      : "both";
+  // Nobody can be put on a call, so "live" would promise something untrue.
+  if (emailOnly && canConnectLive(mode)) return "after";
+  return mode;
 }
 
 /* ── Flow construction ────────────────────────────────────────────────────── */
@@ -255,8 +316,9 @@ function edge(from: FlowNode, to: FlowNode, label?: string, tone: FlowEdge["tone
 
 /**
  * Builds a runnable graph for one planned agent. Every graph ends in an End,
- * a callback. A transfer node is added only when a desk exists and the owner
- * has not ruled humans out. Bookings only when there is a type.
+ * a callback. A transfer node is added only when this agent connects live
+ * and somebody takes calls; an agent that informs after the call gets a
+ * "take the details" step instead. Bookings only when there is a type.
  */
 function buildFlow(
   spec: Shape["agents"][number],
@@ -266,8 +328,11 @@ function buildFlow(
   const nodes: FlowNode[] = [];
   const edges: FlowEdge[] = [];
   const needs = new Set<string>();
-  const canTransfer = ctx.playbook.extra.humanEscalation !== false && ctx.transfers.length > 0;
-  const desk = canTransfer ? ctx.transfers[0]?.name : undefined;
+  const mode = spec.humanMode ?? "both";
+  const callTakers = ctx.transfers.filter((t) => t.calls);
+  const canTransfer = canConnectLive(mode) && callTakers.length > 0;
+  const informAfter = !canTransfer && informsAfterCall(mode) && (ctx.transfers.length > 0 || ctx.teamInbox);
+  const desk = canTransfer ? callTakers[0]?.name : undefined;
   const handoffs = spec.handsOffTo.map((k) => ({ key: k, name: handoffKeysToNames.get(k) ?? k }));
 
   const start = node("start", spec.direction === "outbound" ? "Introduce + ask for two minutes" : "Greet", 40, 40, {
@@ -278,10 +343,15 @@ function buildFlow(
   const end = node("end", "Close and hang up", 820, 260, { hangUp: true, script: "" });
   const human = canTransfer
     ? node("escalate", desk ? `Transfer to ${desk}` : "Transfer to human", 820, 60, desk ? { transferTarget: desk } : {})
-    : node("collect", "No human available — take a callback", 820, 60, {
-        fields: ["name, if you do not have it", "confirm the number they are calling from is fine for a callback"],
-        note: "Say plainly that nobody is free to take the call. Do not offer a transfer or name a person.",
-      });
+    : informAfter
+      ? node("collect", "Take the details — the right person is informed after the call", 820, 60, {
+          fields: ["what they need a person for, in their words", "name, if you do not have it", "confirm the number they are calling from is fine for a callback"],
+          note: "Do not offer a transfer. File what they told you, then say the right person will be informed as soon as the call ends and will get back to them.",
+        })
+      : node("collect", "No human available — take a callback", 820, 60, {
+          fields: ["name, if you do not have it", "confirm the number they are calling from is fine for a callback"],
+          note: "Say plainly that nobody is free to take the call. Do not offer a transfer or name a person.",
+        });
   let humanAdded = false;
   const attachHuman = (from: FlowNode, label: string) => {
     if (!humanAdded) {
@@ -424,15 +494,16 @@ function ownerSaidNoHumans(text: string) {
 
 function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
   const names = new Map(shape.agents.map((a) => [a.key, a.name]));
-  const canTransfer = ctx.playbook.extra.humanEscalation !== false && ctx.transfers.length > 0;
+  const someoneTakesCalls = ctx.transfers.some((t) => t.calls);
   const canBook = ctx.appointmentTypes.length > 0;
   const usedNames = new Set<string>();
   return shape.agents.map((a) => {
     const flow = buildFlow(a, ctx, names);
+    const humanMode = a.humanMode ?? resolveMode(undefined, ctx);
     const tools = toolsForRole({
       intent: a.intent,
       isFrontDoor: a.isFrontDoor,
-      canTransfer,
+      canTransfer: canConnectLive(humanMode) && someoneTakesCalls,
       canHandoff: a.handsOffTo.length > 0,
       canBook,
     });
@@ -461,6 +532,7 @@ function materialise(shape: Shape, ctx: PlanContext): PlannedAgent[] {
       knowledge,
       personaName,
       voice,
+      humanMode,
       prompt: buildRolePrompt({
         name: a.name,
         job: a.job,
@@ -506,6 +578,7 @@ export async function applyPlan(orgId: string, plan: Pick<AgentPlan, "agents">) 
       tools: a.tools,
       voice: a.voice || undefined,
       personaName: a.personaName || undefined,
+      humanMode: a.humanMode,
       languages: [...AGENT_LANGUAGES],
       nodes: [],
       edges: [],

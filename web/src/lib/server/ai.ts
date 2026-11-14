@@ -1,7 +1,9 @@
 import "server-only";
 import { GoogleGenAI, Type } from "@google/genai";
-import { getDb, uid } from "./db";
+import { getDb } from "./db";
 import { TEXT_MODELS } from "./models";
+import { unassignedDepartment } from "./workspace";
+import { GENERAL_DEPARTMENT, UNASSIGNED_DEPARTMENT } from "@/lib/agents/departments";
 
 /**
  * The non-live AI: post-call analysis and knowledge embeddings.
@@ -131,34 +133,30 @@ export async function analyzeCall(
   };
 }
 
-/** Department for a complaint registered mid-call, when there is no full
- *  transcript yet. Keywords first, `support` as the catch-all. */
+/**
+ * Which team owns a ticket registered mid-call, when there is no full
+ * transcript yet. A team's routing words decide; a workspace that still has
+ * the older General desk uses it as the catch-all; everything else — and
+ * every ticket in a business with no teams at all — goes to the Unassigned
+ * queue. A complaint is never dropped because nobody set up departments.
+ */
 export function classifyDepartment(
   orgId: string,
   textToClassify: string,
-): { id: string; slug: string; name: string } {
+): { id: string; slug: string; name: string; unassigned: boolean } {
   const rows = getDb()
-    .prepare("SELECT id, slug, name, keywords FROM departments WHERE org_id=?")
-    .all(orgId) as { id: string; slug: string; name: string; keywords: string }[];
+    .prepare("SELECT id, slug, name, keywords FROM departments WHERE org_id=? AND slug!=?")
+    .all(orgId, UNASSIGNED_DEPARTMENT.slug) as { id: string; slug: string; name: string; keywords: string }[];
   const lower = textToClassify.toLowerCase();
 
   let best: { row: (typeof rows)[0]; hits: number } | null = null;
   for (const row of rows) {
-    const hits = (JSON.parse(row.keywords) as string[]).filter((k) => lower.includes(k)).length;
+    const hits = (JSON.parse(row.keywords || "[]") as string[]).filter((k) => k && lower.includes(k.toLowerCase())).length;
     if (hits > 0 && (!best || hits > best.hits)) best = { row, hits };
   }
-  // No keyword hit: the org's General desk, else whatever desk exists. An org
-  // with zero departments gets General created on the spot — a complaint
-  // must never be dropped because setup is incomplete.
-  let chosen = best?.row ?? rows.find((r) => r.slug === "general") ?? rows[0];
-  if (!chosen) {
-    const id = uid("dept");
-    getDb()
-      .prepare("INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, 'general', 'General', '[]')")
-      .run(id, orgId);
-    chosen = { id, slug: "general", name: "General", keywords: "[]" };
-  }
-  return { id: chosen.id, slug: chosen.slug, name: chosen.name };
+  const chosen = best?.row ?? rows.find((r) => r.slug === GENERAL_DEPARTMENT.slug);
+  if (chosen) return { id: chosen.id, slug: chosen.slug, name: chosen.name, unassigned: false };
+  return { ...unassignedDepartment(orgId), unassigned: true };
 }
 
 /* ── embeddings ─────────────────────────────────────────────────────────── */

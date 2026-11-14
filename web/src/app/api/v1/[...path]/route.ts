@@ -10,7 +10,7 @@ import * as ws from "@/lib/server/workspace";
 import * as housekeeping from "@/lib/server/housekeeping";
 import { applyPlan, planAgents } from "@/lib/server/planner";
 import { runSwaraChat } from "@/lib/server/swara-chat";
-import { AgentPlanSchema, UseCaseSchema } from "@/lib/api/schemas";
+import { AgentPlanSchema, HumanModeSchema, UseCaseSchema } from "@/lib/api/schemas";
 
 /**
  * The whole API surface in one router.
@@ -165,6 +165,13 @@ const PlaybookBody = z.object({
   useCase: UseCaseSchema.optional(),
   hasSales: z.boolean().optional(),
   humanEscalation: z.boolean().optional(),
+  features: z
+    .object({
+      complaints: z.boolean().optional(),
+      appointments: z.boolean().optional(),
+      orders: z.boolean().optional(),
+    })
+    .optional(),
 });
 const PlanBody = z.object({
   brief: z.string().max(4000).default(""),
@@ -193,17 +200,23 @@ const DepartmentBody = z.object({
   phone: z.string().optional(),
   whatsapp: z.string().optional(),
 });
+// A person. Only the name is required here; whether there is a usable phone
+// or email for the channels they ticked is checked in upsertTransfer, which
+// answers in words an owner can act on.
 const TransferBody = z.object({
   id: z.string().optional(),
-  name: z.string().min(1),
-  role: z.string().min(1),
-  phone: z.string().min(8),
-  hours: z.string().optional(),
-  whenToUse: z.string().min(1),
+  name: z.string().trim().min(1, "A person needs a name."),
+  role: z.string().max(80).optional(),
+  phone: z.string().max(24).optional(),
+  hours: z.string().max(120).optional(),
+  whenToUse: z.string().max(400).optional(),
   departmentId: z.string().nullable().optional(),
   priority: z.number().int().optional(),
-  email: z.string().optional(),
-  whatsapp: z.string().optional(),
+  email: z.string().max(160).optional(),
+  whatsapp: z.string().max(24).optional(),
+  contactCalls: z.boolean().optional(),
+  contactEmail: z.boolean().optional(),
+  isDefault: z.boolean().optional(),
 });
 const AppointmentBody = z.object({
   id: z.string().optional(),
@@ -432,8 +445,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
 
   if (key === "setup/transfers") {
     const parsed = TransferBody.safeParse(body);
-    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid transfer" }, 400);
-    return json(ws.upsertTransfer(user.orgId, parsed.data));
+    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid person" }, 400);
+    const saved = ws.upsertTransfer(user.orgId, parsed.data);
+    if (saved.error) return json({ error: saved.error }, 400);
+    return json(saved);
   }
 
   if (key === "setup/appointments") {
@@ -512,6 +527,7 @@ const AgentPatch = z.object({
   /** Live voice name, e.g. from the test panel's picker. */
   voice: z.string().optional(),
   personaName: z.string().max(40).optional(),
+  humanMode: HumanModeSchema.optional(),
 });
 const VoicePatch = z.object({
   promptTemplate: z.string().max(2000).optional(),
@@ -601,7 +617,7 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ path: s
   if (path[0] === "departments" && path[1]) {
     const result = ws.deleteDepartment(user.orgId, path[1]);
     if (result.error) return json({ error: result.error }, 400);
-    return json({ ok: true });
+    return json({ ok: true, movedTo: result.movedTo, openMoved: result.openMoved });
   }
 
   if (path[0] === "agents" && path[1]) {

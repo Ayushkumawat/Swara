@@ -1,10 +1,11 @@
 import "server-only";
 import { getDb, nowIso, uid } from "./db";
-import { analyzeCall } from "./ai";
+import { analyzeCall, classifyDepartment } from "./ai";
 import { completeCall, updateCallAnalysis } from "./repo";
 import { recordCallForCustomer } from "./customers";
-import { addTicketMessage, registerTicket } from "./tickets";
+import { addTicketMessage, informAfterCall, registerTicket } from "./tickets";
 import { IntentSchema } from "@/lib/api/schemas";
+import { UNASSIGNED_DEPARTMENT } from "@/lib/agents/departments";
 
 /**
  * What happens after the caller hangs up.
@@ -18,6 +19,11 @@ import { IntentSchema } from "@/lib/api/schemas";
  * tool), that work is queued and has a reference number; the pipeline only
  * adds actions for calls where follow-up surfaced without a formal complaint,
  * so nothing is double-filed.
+ *
+ * Last, the people: if the agent is set to inform after the call, whoever
+ * owns what the call left behind gets a call or an email (their own ticks in
+ * Workspace setup). That step runs even when analysis failed — a ticket the
+ * agent filed mid-call does not need a summary to be passed on.
  */
 
 /**
@@ -99,11 +105,12 @@ export async function finishCall(params: {
       : null;
 
   // Analysis is best-effort from here down.
-  try {
+  const analyse = async () => {
+    // The Unassigned queue is not a team the model should pick.
     const departments = (db
-      .prepare("SELECT slug, name, keywords FROM departments WHERE org_id=?")
-      .all(params.orgId) as { slug: string; name: string; keywords: string }[])
-      .map((d) => ({ ...d, keywords: JSON.parse(d.keywords) as string[] }));
+      .prepare("SELECT slug, name, keywords FROM departments WHERE org_id=? AND slug!=?")
+      .all(params.orgId, UNASSIGNED_DEPARTMENT.slug) as { slug: string; name: string; keywords: string }[])
+      .map((d) => ({ ...d, keywords: JSON.parse(d.keywords || "[]") as string[] }));
 
     const analysis = await analyzeCall(params.transcript, departments, [...IntentSchema.options]);
     if (!analysis) {
@@ -156,11 +163,19 @@ export async function finishCall(params: {
       alreadyQueued = 1;
     }
 
-    if (!alreadyQueued && analysis.departmentSlug && analysis.actionItems.length > 0) {
-      const dept = db
-        .prepare("SELECT id, name FROM departments WHERE org_id=? AND slug=?")
-        .get(params.orgId, analysis.departmentSlug) as { id: string; name: string } | undefined;
-      if (dept) {
+    if (!alreadyQueued && analysis.actionItems.length > 0) {
+      // The team the analysis picked; otherwise a team whose routing words
+      // match, the older General desk, or the Unassigned queue. A business
+      // with no teams still gets its follow-ups — they are not dropped.
+      const picked = analysis.departmentSlug
+        ? (db
+            .prepare("SELECT id, name FROM departments WHERE org_id=? AND slug=?")
+            .get(params.orgId, analysis.departmentSlug) as { id: string; name: string } | undefined)
+        : undefined;
+      const dept =
+        picked ??
+        classifyDepartment(params.orgId, analysis.actionItems.map((i) => `${i.title} ${i.detail}`).join(" "));
+      {
         const insert = db.prepare(
           `INSERT INTO actions (id, org_id, department_id, call_id, complaint_id, title, detail, severity, status, created_at, due_at)
            VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 'open', ?, ?)`,
@@ -180,6 +195,10 @@ export async function finishCall(params: {
         );
       }
     }
+  };
+
+  try {
+    await analyse();
   } catch (error) {
     console.error("[pipeline] post-call analysis failed:", error);
     try {
@@ -187,5 +206,13 @@ export async function finishCall(params: {
     } catch (inner) {
       console.error("[pipeline] customer record failed:", inner);
     }
+  }
+
+  // Tell the people. Its own try: a mail provider being down must not turn
+  // a finished call into a failed one.
+  try {
+    await informAfterCall(params.orgId, params.callId);
+  } catch (error) {
+    console.error("[pipeline] informing after the call failed:", error);
   }
 }

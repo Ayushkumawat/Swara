@@ -91,16 +91,25 @@ export default function OnboardingPage() {
     if (step === 1 && !IS_MOCK) {
       try {
         await mutations.savePlaybook({ hours, transferPolicy: transferName ? `Transfer to ${transferName}` : "" });
-        if (transferName && transferPhone) {
-          await mutations.saveTransfer({
-            name: transferName,
-            role: "On-call",
-            phone: transferPhone,
-            whenToUse: "Caller asked for a person, or the agent is stuck",
-          });
-        }
       } catch {
         // Wizard still advances — setup can be finished in the console.
+      }
+      if (transferName.trim() && transferPhone.trim()) {
+        try {
+          // The first person added is the default contact: the one agents
+          // connect or inform when nothing more specific fits.
+          await mutations.saveTransfer({
+            name: transferName.trim(),
+            role: "On-call",
+            phone: transferPhone.trim(),
+            whenToUse: "Caller asked for a person, or the agent is stuck",
+            isDefault: true,
+          });
+        } catch {
+          toast.error(`${transferName.trim()} was not saved`, {
+            description: "Check the phone number — it needs at least 10 digits. You can add them later in Workspace setup → People & teams.",
+          });
+        }
       }
     }
     if (step < STEPS.length - 1) setStep(step + 1);
@@ -183,7 +192,7 @@ export default function OnboardingPage() {
                     <Field label="Working hours">
                       <TextInput value={hours} onChange={setHours} placeholder="10:00-19:00 IST" />
                     </Field>
-                    <Field label="Transfer to (optional)">
+                    <Field label="Person a call can reach (optional)">
                       <TextInput value={transferName} onChange={setTransferName} placeholder="Priya Desai, support lead" />
                     </Field>
                     <Field label="Their phone">
@@ -191,9 +200,9 @@ export default function OnboardingPage() {
                     </Field>
                   </div>
                   <p className="mt-5 rounded-[12px] bg-white/[0.03] p-3 text-[11.5px] leading-relaxed text-t3">
-                    You can add departments, appointment types and a knowledge base later in
-                    Workspace setup. Without a transfer number the agent will take a callback
-                    instead of inventing a desk.
+                    More people, email-only contacts, appointment types and a knowledge base can
+                    be added later in Workspace setup — only the parts your agents use. Without
+                    a person here the agent takes the details instead of inventing someone.
                   </p>
                 </>
               ) : null}

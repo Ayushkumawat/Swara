@@ -1,21 +1,29 @@
 import type { UseCase } from "@/lib/api/schemas";
 
 /**
- * Departments are tenant data, not platform data. Nothing in the product
- * assumes a "support" or "cleaning" desk exists; the only row every org gets
- * is `general`, which is where a complaint lands when nobody else claims it.
+ * Departments ("teams") are tenant data, not platform data, and they are
+ * optional: a business with one owner and no teams is a normal workspace.
+ * Nothing is created for a new account.
  *
- * These lists are *suggestions* shown on the Setup page and applied once,
- * when an owner picks a use case in onboarding and has not yet added a desk
- * of their own. The owner can delete or rename any of them.
+ * These lists are *suggestions* shown on the Setup page as one-click chips.
+ * They are never applied automatically.
  */
 export type DepartmentSuggestion = { slug: string; name: string; keywords: string[] };
 
+/** Older workspaces were given this desk on creation; it still catches
+ *  anything no keyword claims, for the workspaces that kept it. */
 export const GENERAL_DEPARTMENT: DepartmentSuggestion = {
   slug: "general",
   name: "General",
   keywords: [],
 };
+
+/**
+ * Where work lands when no team owns it. Created the first time something
+ * needs it, never shown as a team in Setup, and not offered to the agents
+ * or to Swara as a department — it is a queue, not a desk.
+ */
+export const UNASSIGNED_DEPARTMENT = { slug: "unassigned", name: "Unassigned" } as const;
 
 export const DEPARTMENTS_BY_USE_CASE: Record<UseCase, DepartmentSuggestion[]> = {
   clinic: [

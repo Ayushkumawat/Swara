@@ -86,7 +86,7 @@ export default function QueuePage() {
         sub={
           scoped
             ? "Work routed to your department from live calls, ordered by deadline"
-            : "Everything the calls produced, routed by department"
+            : "Everything the calls produced, with who it went to. Work no team owns sits in Unassigned"
         }
         actions={
           overdue > 0 ? (
@@ -102,7 +102,7 @@ export default function QueuePage() {
       {!scoped && departmentNames.length > 1 ? (
         <div className="mb-4 flex flex-wrap gap-1.5">
           <FilterChip active={deptFilter === null} onClick={() => setDeptFilter(null)}>
-            All departments
+            All
           </FilterChip>
           {departmentNames.map((name) => (
             <FilterChip key={name} active={deptFilter === name} onClick={() => setDeptFilter(name)}>
@@ -121,7 +121,8 @@ export default function QueuePage() {
             <p className="mt-3 text-[14px] font-medium text-t1">Queue is clear</p>
             <p className="mx-auto mt-1 max-w-[380px] text-[12.5px] text-t3">
               Actions appear here when calls produce work — a complaint registered mid-call, or
-              follow-ups the post-call analysis routes to a department.
+              follow-ups found after the call. They go to the right team, or to Unassigned when
+              you have no teams.
             </p>
           </Card>
         }

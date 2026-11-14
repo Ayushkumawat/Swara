@@ -266,7 +266,8 @@ function InterveneModal({
   const [custom, setCustom] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const desks = transfers.data ?? [];
+  // Only people who take calls can be bridged in.
+  const desks = (transfers.data ?? []).filter((d) => d.contactCalls);
   const desk = desks.find((d) => d.id === deskId);
   const phone = deskId === "custom" || !deskId ? custom : desk?.phone ?? "";
   const valid = phone.replace(/[^\d]/g, "").length >= 10;
@@ -312,7 +313,7 @@ function InterveneModal({
           <Select
             value={deskId}
             onChange={setDeskId}
-            placeholder="Pick a desk or type a number"
+            placeholder="Pick a person or type a number"
             options={[
               ...desks.map((d) => ({ value: d.id, label: `${d.name} · ${d.role}`, hint: `${d.phone}${d.hours ? ` · ${d.hours}` : ""}` })),
               { value: "custom", label: "Another number…", hint: "E.164 or 10-digit Indian mobile" },

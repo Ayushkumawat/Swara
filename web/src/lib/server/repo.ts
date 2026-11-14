@@ -2,6 +2,8 @@ import "server-only";
 import { getDb, nowIso, uid } from "./db";
 import { addTimelineEvent, tagCustomer, touchCustomer } from "./customers";
 import { PLANS } from "@/lib/pricing";
+import { UNASSIGNED_DEPARTMENT } from "@/lib/agents/departments";
+import { normaliseHumanMode, type HumanMode } from "@/lib/agents/human-mode";
 
 /**
  * Every read the console performs, computed from rows.
@@ -565,6 +567,8 @@ export function agents(orgId: string) {
     /** Live API voice name, resolved from the org's voice row. */
     voice: (r.voice_live_name as string) ?? undefined,
     personaName: (r.persona_name as string) ?? undefined,
+    /** What this agent does when a call needs a person. */
+    humanMode: normaliseHumanMode(r.human_mode),
     mode: r.mode as string,
     prompt: (r.prompt as string) ?? undefined,
     tools: r.tools ? (JSON.parse(r.tools as string) as string[]) : [],
@@ -646,7 +650,9 @@ export function departments(orgId: string) {
     slug: r.slug as string,
     name: r.name as string,
     openActions: r.open_actions as number,
-    keywords: JSON.parse((r.keywords as string) ?? "[]") as string[],
+    /** The Unassigned queue: holds work no team owns; not a team itself. */
+    system: r.slug === UNASSIGNED_DEPARTMENT.slug,
+    keywords: JSON.parse((r.keywords as string) || "[]") as string[],
     email: (r.email as string) ?? "",
     phone: (r.phone as string) ?? "",
     whatsapp: (r.whatsapp as string) ?? "",
@@ -725,6 +731,8 @@ export function createComplaint(params: {
   detail: string;
   slaHours?: number;
   kind?: string;
+  /** The person it goes to when no team owns it. */
+  assignee?: string | null;
 }) {
   const d = db();
   const now = nowIso();
@@ -737,9 +745,9 @@ export function createComplaint(params: {
 
   d.prepare(
     `INSERT INTO complaints (id, org_id, ref, title, category, severity, stage, customer_name, phone, opened_at, sla_due_at, assignee, call_id, department_id, has_recording, has_consent, kind)
-     VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
   ).run(id, params.orgId, ref, params.title, params.category, params.severity,
-    params.customerName, params.phone, now, slaDue, params.callId, params.departmentId,
+    params.customerName, params.phone, now, slaDue, params.assignee ?? null, params.callId, params.departmentId,
     params.callId ? 1 : 0, kind);
 
   d.prepare(
@@ -749,7 +757,9 @@ export function createComplaint(params: {
     params.title, params.detail, params.severity, now, slaDue);
 
   const dept = d.prepare("SELECT name FROM departments WHERE id=?").get(params.departmentId) as { name: string } | undefined;
-  const deptName = dept?.name ?? "General";
+  // "→ Unassigned" tells an owner nothing; name the person it went to.
+  const deptName =
+    dept?.name === UNASSIGNED_DEPARTMENT.name && params.assignee ? params.assignee : dept?.name ?? UNASSIGNED_DEPARTMENT.name;
   d.prepare(
     `INSERT INTO notifications (id, org_id, kind, title, body, at, severity, read, href)
      VALUES (?, ?, 'complaint', ?, ?, ?, ?, 0, '/complaints')`,
@@ -999,11 +1009,12 @@ export function createAgent(orgId: string, data: {
   personaName?: string;
   languages?: string[];
   tools?: string[];
+  humanMode?: HumanMode;
 }) {
   const id = uid("ag");
   db().prepare(
-    `INSERT INTO agents (id, org_id, name, status, languages, intent, direction, voice_id, persona_name, mode, prompt, tools, nodes, edges, version, updated_at)
-     VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    `INSERT INTO agents (id, org_id, name, status, languages, intent, direction, voice_id, persona_name, mode, prompt, tools, nodes, edges, version, updated_at, human_mode)
+     VALUES (?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
   ).run(
     id, orgId, data.name,
     JSON.stringify(data.languages ?? ["hi", "en", "hinglish", "ta", "te", "kn", "ml", "mr", "bn", "gu", "pa", "or"]),
@@ -1016,6 +1027,7 @@ export function createAgent(orgId: string, data: {
     JSON.stringify(data.nodes ?? []),
     JSON.stringify(data.edges ?? []),
     nowIso(),
+    data.humanMode ?? null,
   );
   return id;
 }
@@ -1040,11 +1052,12 @@ export function updateAgent(orgId: string, id: string, data: {
   voice?: string;
   personaName?: string;
   tools?: string[];
+  humanMode?: HumanMode;
 }) {
   const current = db().prepare("SELECT * FROM agents WHERE id=? AND org_id=?").get(id, orgId) as Row | undefined;
   if (!current) return { error: "No such agent" } as const;
   db().prepare(
-    `UPDATE agents SET name=?, prompt=?, status=?, direction=?, nodes=?, edges=?, voice_id=?, persona_name=?, tools=?,
+    `UPDATE agents SET name=?, prompt=?, status=?, direction=?, nodes=?, edges=?, voice_id=?, persona_name=?, tools=?, human_mode=?,
        mode=?, version=version+1, updated_at=? WHERE id=? AND org_id=?`,
   ).run(
     data.name ?? current.name,
@@ -1056,6 +1069,7 @@ export function updateAgent(orgId: string, id: string, data: {
     data.voiceId ?? voiceRowId(orgId, data.voice) ?? current.voice_id,
     data.personaName !== undefined ? data.personaName.trim() || null : current.persona_name,
     data.tools ? JSON.stringify(data.tools) : current.tools,
+    data.humanMode ?? current.human_mode,
     (data.nodes && data.nodes.length) || JSON.parse(current.nodes as string).length ? "graph" : "prompt",
     nowIso(), id, orgId,
   );

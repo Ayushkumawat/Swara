@@ -190,13 +190,13 @@ const DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "notify_stakeholder",
     description:
-      "Email, WhatsApp or call the department or person who owns this ticket, with the details just collected. Use after filing when the caller needs that desk informed now.",
+      "Tell the person or team who owns this ticket right now, during the call, with the details just collected. Use after filing only when the caller needs them informed immediately. Each person is reached the way they asked to be (call or email) whatever channel you pass.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         reference_number: { type: Type.STRING },
         channel: { type: Type.STRING, enum: ["email", "whatsapp", "sms", "call"] },
-        target_name: { type: Type.STRING, description: "Desk or department name from TRANSFER TARGETS / DEPARTMENTS" },
+        target_name: { type: Type.STRING, description: "Person or team name from your instructions. Omit to reach whoever owns the ticket." },
         message: { type: Type.STRING, description: "Short brief to send them" },
       },
       required: ["reference_number", "channel"],
@@ -262,7 +262,7 @@ const DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "transfer_to_human",
     description:
-      "Warm-transfer the caller to a human. Call this only after you have a transfer target from your instructions or after the caller asked for a person. Never invent a phone number.",
+      "Connect the caller to a person on this same call. Only people listed under TRANSFER TARGETS in your instructions can be reached. Never invent a person or a phone number.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -315,13 +315,14 @@ export const TOOL_DECLARATIONS: FunctionDeclaration[] = DECLARATIONS.map((d) =>
 
 /**
  * Tools only the Swara setup assistant carries. They write workspace rows —
- * departments, transfer desks, appointment types, knowledge, the agent plan —
- * so a business can be configured by talking rather than by filling forms.
+ * people, teams, appointment types, knowledge, the agent plan — so a business
+ * can be configured by talking rather than by filling forms. Anything she can
+ * add she can also change and remove.
  */
 export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: "get_setup_status",
-    description: "Read what the workspace already has configured, so you never ask for something that exists.",
+    description: "Read what the workspace already has configured — the business, its people (and how each wants to be reached), teams, appointment types, agents — so you never ask for something that exists and can name the exact row before changing it.",
     parameters: { type: Type.OBJECT, properties: {} },
   },
   {
@@ -337,7 +338,10 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         },
         hours: { type: Type.STRING },
         has_sales: { type: Type.BOOLEAN, description: "Do they also want outbound sales / lead follow-up?" },
-        human_escalation: { type: Type.BOOLEAN, description: "Is there any human a call can be transferred to?" },
+        human_escalation: { type: Type.BOOLEAN, description: "Is there any person a call can be passed to, during it or after it?" },
+        takes_complaints: { type: Type.BOOLEAN, description: "Do their agents take complaints or requests that someone must follow up?" },
+        takes_appointments: { type: Type.BOOLEAN, description: "Do their agents book appointments or slots?" },
+        looks_up_orders: { type: Type.BOOLEAN, description: "Do their agents look up orders or deliveries?" },
         transfer_policy: { type: Type.STRING, description: "When to transfer, in one or two sentences" },
         booking_policy: { type: Type.STRING },
         complaint_sla_hours: { type: Type.NUMBER },
@@ -346,30 +350,96 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   },
   {
     name: "add_department",
-    description: "Create a department that will own follow-up work. Include the words a caller would use so complaints route to it.",
+    description: "Create a team that owns follow-up work. Optional — a business with one or two people needs none. Include the words a caller would use so complaints route to it.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING },
         keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+        email: { type: Type.STRING, description: "Shared team inbox, if they have one" },
       },
       required: ["name"],
     },
   },
   {
+    name: "update_department",
+    description: "Rename a team, change the words that route complaints to it, or set its shared inbox. Send only what changes.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        department: { type: Type.STRING, description: "Current team name" },
+        name: { type: Type.STRING, description: "New name" },
+        keywords: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Replaces the routing words" },
+        email: { type: Type.STRING, description: "Shared team inbox; empty string clears it" },
+      },
+      required: ["department"],
+    },
+  },
+  {
+    name: "remove_department",
+    description: "Delete a team. Its open work moves to the Unassigned queue and its people stay, without a team. Only after the owner has said yes to removing this exact team.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        department: { type: Type.STRING, description: "Team name" },
+        confirmed: { type: Type.BOOLEAN, description: "True only if the owner explicitly agreed to remove it in this conversation" },
+      },
+      required: ["department", "confirmed"],
+    },
+  },
+  {
     name: "add_transfer_target",
-    description: "Add a human the agents may transfer to. Needs a real phone number — ask for it and read it back.",
+    description:
+      "Add a person of the business: someone the agents can connect a caller to, or who should be told about things after a call. Needs a name and a phone number, an email, or both. Ask how they want to be reached — calls, email, or both — and read the number or address back.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING },
+        role: { type: Type.STRING, description: "e.g. Owner, Manager, Billing" },
+        phone: { type: Type.STRING, description: "E.164 or 10-digit Indian mobile. Needed if they take calls." },
+        email: { type: Type.STRING, description: "Needed if they want email." },
+        takes_calls: { type: Type.BOOLEAN, description: "They may be connected live and called after a call. Defaults to true when a phone is given." },
+        takes_email: { type: Type.BOOLEAN, description: "They get the details by email. Defaults to true when an email is given." },
+        is_default: { type: Type.BOOLEAN, description: "This person gets whatever no team owns" },
+        hours: { type: Type.STRING },
+        when_to_use: { type: Type.STRING, description: "When an agent should bring this person in" },
+        department: { type: Type.STRING, description: "Team name, if they belong to one" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "update_person",
+    description:
+      "Change a person already listed: their number, email, role, team, hours, when to bring them in, or how they want to be reached. Send only what changes.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        person: { type: Type.STRING, description: "Their current name, as listed" },
+        name: { type: Type.STRING, description: "New name" },
         role: { type: Type.STRING },
-        phone: { type: Type.STRING, description: "E.164 or 10-digit Indian mobile" },
+        phone: { type: Type.STRING },
+        email: { type: Type.STRING },
+        takes_calls: { type: Type.BOOLEAN },
+        takes_email: { type: Type.BOOLEAN },
+        is_default: { type: Type.BOOLEAN },
         hours: { type: Type.STRING },
         when_to_use: { type: Type.STRING },
-        department: { type: Type.STRING, description: "Department name, if it belongs to one" },
+        department: { type: Type.STRING, description: "Team name; empty string removes them from their team" },
       },
-      required: ["name", "role", "phone", "when_to_use"],
+      required: ["person"],
+    },
+  },
+  {
+    name: "remove_person",
+    description: "Remove a person, so agents no longer connect callers to them or inform them. Only after the owner has said yes to removing this exact person.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        person: { type: Type.STRING, description: "Their name, as listed" },
+        confirmed: { type: Type.BOOLEAN, description: "True only if the owner explicitly agreed to remove them in this conversation" },
+      },
+      required: ["person", "confirmed"],
     },
   },
   {
@@ -385,6 +455,34 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         notes: { type: Type.STRING },
       },
       required: ["name", "duration_min"],
+    },
+  },
+  {
+    name: "update_appointment_type",
+    description: "Change something bookable: its name, length, hours, place or notes. Send only what changes.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        appointment_type: { type: Type.STRING, description: "Current name" },
+        name: { type: Type.STRING, description: "New name" },
+        duration_min: { type: Type.NUMBER },
+        hours: { type: Type.STRING },
+        location: { type: Type.STRING },
+        notes: { type: Type.STRING },
+      },
+      required: ["appointment_type"],
+    },
+  },
+  {
+    name: "remove_appointment_type",
+    description: "Stop offering something bookable. Bookings already made are kept. Only after the owner has said yes to removing this exact type.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        appointment_type: { type: Type.STRING, description: "Name" },
+        confirmed: { type: Type.BOOLEAN, description: "True only if the owner explicitly agreed to remove it in this conversation" },
+      },
+      required: ["appointment_type", "confirmed"],
     },
   },
   {
@@ -423,6 +521,12 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
               hands_off_to: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Names of other agents in this plan" },
               is_front_door: { type: Type.BOOLEAN, description: "Answers the main number and routes" },
               persona_name: { type: Type.STRING, description: "The first name this agent uses on the call, if the owner chose one" },
+              when_person_needed: {
+                type: Type.STRING,
+                enum: ["both", "live", "after", "never"],
+                description:
+                  "What this agent does when a call needs a person. live = connect the caller to them on the call; after = note it and they are told when the call ends; both; never = handle it alone. Omit if the owner did not say.",
+              },
               voice: {
                 type: Type.STRING,
                 description: `If the owner has a preference. One of: ${VOICE_CATALOG.map((v) => `${v.name} (${v.gender}, ${v.descriptor})`).join(", ")}`,
@@ -469,6 +573,11 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         },
         direction: { type: Type.STRING, enum: ["inbound", "outbound", "both"] },
         status: { type: Type.STRING, enum: ["draft", "testing", "live", "paused"] },
+        when_person_needed: {
+          type: Type.STRING,
+          enum: ["both", "live", "after", "never"],
+          description: "live = connect the caller to a person on the call; after = they are told when the call ends; both; never",
+        },
         add_tools: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tool names to allow, e.g. book_slot, search_knowledge" },
         remove_tools: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Tool names to take away" },
       },
@@ -476,6 +585,40 @@ export const SETUP_TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
 ];
+
+/**
+ * Typed-chat only. Lets Swara put her questions on screen as cards — each
+ * with its own answer box and one-tap suggestions — instead of a paragraph
+ * the owner has to answer in one go. Kept out of SETUP_TOOL_DECLARATIONS
+ * because the voice session has no screen to put a card on; there she asks
+ * aloud, one question at a time.
+ */
+export const ASK_OWNER_DECLARATION: FunctionDeclaration = {
+  name: "ask_owner",
+  description:
+    "Show the owner up to four questions as cards, each with its own answer box and tappable suggested answers. Use whenever you need more than one fact, or one fact with obvious choices. The owner may skip any of them. After calling this, write one short line and stop — the cards carry the questions; do not repeat them in your reply.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      questions: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            question: { type: Type.STRING, description: "One plain question, one fact" },
+            suggestions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Two to four likely answers the owner can tap, written as they would say them. Leave empty for names, numbers and addresses.",
+            },
+          },
+          required: ["question"],
+        },
+      },
+    },
+    required: ["questions"],
+  },
+};
 
 export type LiveSessionOptions = {
   systemInstruction: string;

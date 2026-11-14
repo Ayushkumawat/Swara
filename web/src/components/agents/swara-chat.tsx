@@ -8,10 +8,17 @@ import { Button } from "@/components/ui/button";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { SWARA_GREETING } from "@/lib/agents/swara";
 import type { AgentPlan } from "@/lib/api/schemas";
+import { QuestionCards, formatAnswers, type CardQuestion } from "@/components/agents/question-cards";
 import type { SwaraContext } from "@/lib/ui-store";
 import { cn } from "@/lib/utils";
 
-type Turn = { role: "user" | "model"; text: string; receipts?: string[] };
+type Turn = {
+  role: "user" | "model";
+  text: string;
+  receipts?: string[];
+  /** Questions Swara put on screen with this reply — one card each. */
+  questions?: CardQuestion[];
+};
 
 /**
  * The thread lives outside the component so closing the drawer and opening
@@ -31,13 +38,25 @@ export function resetSwaraThread() {
 /** What a tool did, in the owner's words, for the receipt under a reply. */
 const RECEIPT: Record<string, (r: Record<string, unknown>) => string | null> = {
   save_playbook: () => "Business details saved",
-  add_department: (r) => (typeof r.department === "string" ? `Department: ${r.department}` : "Department added"),
-  add_transfer_target: (r) => (typeof r.desk === "string" ? `Transfer desk: ${r.desk}` : "Transfer desk added"),
-  add_appointment_type: (r) => (typeof r.appointment_type === "string" ? `Bookable: ${r.appointment_type}` : "Appointment type added"),
+  add_department: (r) => named("Team added", r.department),
+  update_department: (r) => named("Team updated", r.department),
+  remove_department: (r) => (r.removed === true ? named("Team removed", r.department) : null),
+  add_transfer_target: (r) => named("Person saved", r.person),
+  update_person: (r) => named("Person updated", r.person),
+  remove_person: (r) => (r.removed === true ? named("Person removed", r.person) : null),
+  add_appointment_type: (r) => named("Bookable", r.appointment_type),
+  update_appointment_type: (r) => named("Bookable updated", r.appointment_type),
+  remove_appointment_type: (r) => (r.removed === true ? named("Bookable removed", r.appointment_type) : null),
   add_knowledge: (r) => (typeof r.document === "string" ? `Knowledge: ${r.document}` : "Knowledge saved"),
   propose_agents: () => "Plan ready for review",
   update_agent: (r) => (r.changed ? `Updated ${typeof r.agent === "string" ? r.agent : "agent"}` : null),
 };
+
+/** "Person saved: Asha" — the tool's fuller line (role, number) stays in her reply. */
+function named(label: string, value: unknown) {
+  const name = typeof value === "string" ? value.split(" (")[0].trim() : "";
+  return name ? `${label}: ${name}` : label;
+}
 
 /**
  * Text chat with Swara. She writes the workspace and edits agents through
@@ -100,7 +119,7 @@ export function SwaraChat({
         .filter((t) => typeof t.result.error !== "string")
         .map((t) => RECEIPT[t.name]?.(t.result) ?? null)
         .filter((r): r is string => Boolean(r));
-      setMessages([...history, { role: "model", text: res.reply, receipts }]);
+      setMessages([...history, { role: "model", text: res.reply, receipts, questions: res.questions }]);
       for (const tool of res.tools) {
         if (typeof tool.result.error !== "string") onSaved?.(tool.name);
       }
@@ -125,6 +144,10 @@ export function SwaraChat({
   };
 
   const fresh = messages.length === 1;
+  // Cards are live only under Swara's latest message; once answered (or
+  // typed past) they are part of the history above.
+  const last = messages[messages.length - 1];
+  const openCards = !busy && !failed && last?.role === "model" && last.questions?.length ? last.questions : null;
 
   return (
     <div className={cn("flex min-h-0 flex-col", className)}>
@@ -150,6 +173,16 @@ export function SwaraChat({
             ) : null}
           </div>
         ))}
+        {openCards ? (
+          <QuestionCards
+            key={messages.length}
+            dense
+            className="pt-1"
+            questions={openCards}
+            onSubmit={(answers) => submit(formatAnswers(answers))}
+            onSkipAll={() => submit("Skip these — use your judgement and carry on.")}
+          />
+        ) : null}
         {busy ? (
           <p className="flex items-center gap-2 px-1 text-[11.5px] text-t3">
             <Loader2 className="size-3.5 animate-spin" /> Swara is working on it…
@@ -194,7 +227,13 @@ export function SwaraChat({
           }}
           rows={2}
           disabled={busy}
-          placeholder={context?.agentName ? `Change ${context.agentName}, or describe something new…` : "Describe your business, or what to change…"}
+          placeholder={
+            openCards
+              ? "Answer above, or just type here…"
+              : context?.agentName
+                ? `Change ${context.agentName}, or describe something new…`
+                : "Describe your business, or what to change…"
+          }
           className="glass min-h-[44px] flex-1 resize-none rounded-[12px] px-3 py-2 text-[12.5px] text-t1 outline-none focus:border-cyan/40"
         />
         <Button type="submit" variant="primary" size="sm" disabled={busy || !draft.trim()} title="Send">

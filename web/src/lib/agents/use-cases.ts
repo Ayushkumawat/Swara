@@ -38,7 +38,7 @@ export const USE_CASES: Record<
     blurb: "One number in, many teams behind it. Route, log, escalate, never lose a complaint.",
     focus: ["departments", "transfers", "knowledge", "playbook"],
     agents: ["Front door (routes)", "Complaints & refunds", "Billing / account queries", "Technical support"],
-    hint: "Routing-first. Departments with keywords decide who owns follow-up; transfer desks decide who a call can reach live.",
+    hint: "Routing-first. Teams with routing words decide who owns follow-up; the people you list decide who a call can reach.",
   },
   sales: {
     label: "Sales & lead follow-up",
@@ -52,7 +52,7 @@ export const USE_CASES: Record<
     blurb: "Grievances, lost and found, timings, fares. High volume, many languages.",
     focus: ["departments", "knowledge", "transfers", "playbook"],
     agents: ["Grievance intake", "Enquiry (timings, fares)", "Front door"],
-    hint: "Departments matter most here — cleaning, security, technical each get their own queue. Fares and timetables go in knowledge.",
+    hint: "Teams matter most here — cleaning, security, technical each get their own queue. Fares and timetables go in knowledge.",
   },
   hospitality: {
     label: "Hospitality / restaurant",
@@ -66,13 +66,13 @@ export const USE_CASES: Record<
     blurb: "Admissions enquiries, counselling slots, fee queries, reminders.",
     focus: ["knowledge", "appointments", "transfers", "playbook"],
     agents: ["Admissions enquiry", "Counselling booking", "Fee reminder (outbound)"],
-    hint: "Course details and fees in knowledge; counselling slots as appointment types; a counsellor as a transfer desk.",
+    hint: "Course details and fees in knowledge; counselling slots as appointment types; a counsellor as a person agents can reach.",
   },
   other: {
     label: "Something else",
     blurb: "Tell Swara what you do and she will work out what is needed.",
     focus: ["playbook", "knowledge", "transfers", "departments"],
     agents: ["Reception"],
-    hint: "Start with the playbook and knowledge; add desks and departments as the calls show what is needed.",
+    hint: "Start with what you do and who a call should reach. Switch on the rest only when the calls show you need it.",
   },
 };

@@ -1,15 +1,17 @@
 import "server-only";
 import { getDb, nowIso, uid } from "./db";
 import { VOICE_CATALOG, voiceByName } from "@/lib/live/voices";
-import { GENERAL_DEPARTMENT, suggestedDepartmentsFor } from "@/lib/agents/departments";
+import { GENERAL_DEPARTMENT, UNASSIGNED_DEPARTMENT, suggestedDepartmentsFor } from "@/lib/agents/departments";
+import { USE_CASES } from "@/lib/agents/use-cases";
 
 /**
  * Workspace setup: the details a feature cannot invent.
  *
- * Transfer needs a person and a number. Booking needs slot types and hours.
- * Complaints need departments. The agent prompt is assembled from these rows
- * at token-mint time, so an empty transfer list is how we stop the model
- * offering a human we cannot actually reach.
+ * Reaching a person needs a name and a phone or an email. Booking needs slot
+ * types and hours. Teams (departments) are optional — work nobody owns goes
+ * to an Unassigned queue. The agent prompt is assembled from these rows at
+ * token-mint time, so an empty people list is how we stop the model offering
+ * a human we cannot actually reach.
  */
 
 type Row = Record<string, unknown>;
@@ -43,21 +45,21 @@ export function upsertPlaybook(
     useCase?: string;
     hasSales?: boolean;
     humanEscalation?: boolean;
+    /** Which optional parts of the product this business uses. */
+    features?: Partial<Record<WorkspaceFeature, boolean>>;
   },
 ) {
   const current = playbook(orgId);
   const extra = { ...current.extra };
-  if (fields.useCase !== undefined && fields.useCase !== extra.useCase) {
-    extra.useCase = fields.useCase;
-    // First time an owner names their business type, offer it the desks
-    // that kind of business usually has. Only while they have added none of
-    // their own — after that the list is theirs and we stop touching it.
-    if (!hasCustomDepartments(orgId)) {
-      for (const dept of suggestedDepartmentsFor(fields.useCase)) upsertDepartment(orgId, dept);
-    }
-  }
+  // Naming the business type changes what Setup suggests. It never creates
+  // teams on its own — the suggestions stay one-click chips.
+  if (fields.useCase !== undefined) extra.useCase = fields.useCase;
   if (fields.hasSales !== undefined) extra.hasSales = fields.hasSales;
   if (fields.humanEscalation !== undefined) extra.humanEscalation = fields.humanEscalation;
+  if (fields.features) {
+    const saved = (extra.features ?? {}) as Record<string, unknown>;
+    extra.features = { ...saved, ...fields.features };
+  }
   db().prepare(
     `INSERT INTO workspace_playbook (org_id, business_type, hours, transfer_policy, booking_policy, complaint_sla_hours, extra_json)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -93,6 +95,41 @@ export function publicPlaybook(orgId: string) {
     useCase: typeof p.extra.useCase === "string" ? p.extra.useCase : "other",
     hasSales: p.extra.hasSales === true,
     humanEscalation: p.extra.humanEscalation !== false,
+    features: workspaceFeatures(orgId, p.extra),
+  };
+}
+
+export type WorkspaceFeature = "complaints" | "appointments" | "orders";
+
+/**
+ * The optional parts of the product this business has switched on. Setup
+ * shows only these. A switch the owner never touched follows what is already
+ * there: anything with data is on, and a named business type turns on what
+ * that kind of business usually needs.
+ */
+export function workspaceFeatures(orgId: string, extra: Record<string, unknown>): Record<WorkspaceFeature, boolean> {
+  const saved = (extra.features ?? {}) as Partial<Record<WorkspaceFeature, unknown>>;
+  const useCase = typeof extra.useCase === "string" && extra.useCase in USE_CASES ? (extra.useCase as keyof typeof USE_CASES) : "other";
+  const focus: readonly string[] = useCase === "other" ? [] : USE_CASES[useCase].focus;
+  const has = (sql: string, ...params: unknown[]) => (db().prepare(sql).get(orgId, ...params) as { n: number }).n > 0;
+  const pick = (key: WorkspaceFeature, fallback: () => boolean) =>
+    typeof saved[key] === "boolean" ? (saved[key] as boolean) : fallback();
+  return {
+    complaints: pick(
+      "complaints",
+      () =>
+        focus.includes("departments") ||
+        has("SELECT COUNT(*) n FROM departments WHERE org_id=? AND slug!=?", UNASSIGNED_DEPARTMENT.slug) ||
+        has("SELECT COUNT(*) n FROM complaints WHERE org_id=?"),
+    ),
+    appointments: pick(
+      "appointments",
+      () => focus.includes("appointments") || has("SELECT COUNT(*) n FROM appointment_types WHERE org_id=?"),
+    ),
+    orders: pick(
+      "orders",
+      () => focus.includes("orders") || has("SELECT COUNT(*) n FROM connectors WHERE org_id=? AND tool='lookup_order'"),
+    ),
   };
 }
 
@@ -170,8 +207,14 @@ export function resetVoices(orgId: string) {
   provisionWorkspace(orgId);
 }
 
+/**
+ * The people of the business: anyone an agent may put a caller through to,
+ * or who should be told about something after a call. One row per person,
+ * entered once. (The table keeps its old name; "transfer target" was the
+ * only thing a person could be when it was created.)
+ */
 export function transferTargets(orgId: string) {
-  return (db()
+  const rows = (db()
     .prepare(
       `SELECT t.*, d.name dept_name FROM transfer_targets t
        LEFT JOIN departments d ON d.id=t.department_id
@@ -181,7 +224,7 @@ export function transferTargets(orgId: string) {
     id: r.id as string,
     name: r.name as string,
     role: r.role as string,
-    phone: r.phone as string,
+    phone: (r.phone as string) ?? "",
     hours: (r.hours as string) ?? "",
     whenToUse: r.when_to_use as string,
     departmentId: (r.department_id as string) ?? null,
@@ -189,36 +232,141 @@ export function transferTargets(orgId: string) {
     email: (r.email as string) ?? "",
     whatsapp: (r.whatsapp as string) ?? "",
     priority: r.priority as number,
+    /** Ticked "Calls": may be connected live, and may be called after a call. */
+    contactCalls: Boolean(r.contact_calls) && phoneDigits((r.phone as string) ?? "").length >= 10,
+    /** Ticked "Email": gets the details by email. */
+    contactEmail: Boolean(r.contact_email) && Boolean(((r.email as string) ?? "").trim()),
+    /** Gets whatever no team owns. */
+    isDefault: Boolean(r.is_default),
   }));
+  // A business with exactly one person has a default whether or not they
+  // ticked it: there is nobody else it could be.
+  if (rows.length === 1) rows[0].isDefault = true;
+  return rows;
 }
+
+export type Person = ReturnType<typeof transferTargets>[number];
+
+const phoneDigits = (raw: string) => raw.replace(/\D/g, "");
+
+/** People an agent may connect a caller to during a call. */
+export function liveTransferPeople(orgId: string) {
+  return transferTargets(orgId).filter((p) => p.contactCalls);
+}
+
+/** Who hears about work no team owns: the flagged person, or the only one. */
+export function defaultPerson(orgId: string) {
+  return transferTargets(orgId).find((p) => p.isDefault && (p.contactCalls || p.contactEmail)) ?? null;
+}
+
+const DEFAULT_WHEN_TO_USE = "The caller asked for a person, or the agent cannot resolve it";
 
 export function upsertTransfer(
   orgId: string,
   data: {
     id?: string;
     name: string;
-    role: string;
-    phone: string;
+    role?: string;
+    phone?: string;
     hours?: string;
-    whenToUse: string;
+    whenToUse?: string;
     departmentId?: string | null;
     priority?: number;
     email?: string;
     whatsapp?: string;
+    /** Omitted = follows what was given: a phone means calls, an email means email. */
+    contactCalls?: boolean;
+    contactEmail?: boolean;
+    isDefault?: boolean;
   },
-) {
-  const id = data.id ?? uid("xfer");
-  db().prepare(
-    `INSERT INTO transfer_targets (id, org_id, name, role, phone, hours, when_to_use, department_id, priority, email, whatsapp)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET name=excluded.name, role=excluded.role, phone=excluded.phone,
-       hours=excluded.hours, when_to_use=excluded.when_to_use, department_id=excluded.department_id,
-       priority=excluded.priority, email=excluded.email, whatsapp=excluded.whatsapp`,
-  ).run(
-    id, orgId, data.name, data.role, data.phone, data.hours ?? null, data.whenToUse,
-    data.departmentId ?? null, data.priority ?? 0, data.email ?? null, data.whatsapp ?? null,
-  );
+): { id: string; error?: undefined } | { error: string; id?: undefined } {
+  const name = data.name.trim();
+  if (!name) return { error: "A person needs a name." };
+  const phone = normalisePhone(data.phone ?? "");
+  const email = (data.email ?? "").trim();
+  const contactCalls = data.contactCalls ?? Boolean(phone);
+  const contactEmail = data.contactEmail ?? Boolean(email);
+  if (!contactCalls && !contactEmail) {
+    return { error: `Tick Calls, Email, or both for ${name} — otherwise there is no way to reach them.` };
+  }
+  if (contactCalls && phoneDigits(phone).length < 10) {
+    return { error: `${name} is ticked for calls, so a full phone number is needed.` };
+  }
+  if (contactEmail && !/^\S+@\S+\.\S+$/.test(email)) {
+    return { error: `${name} is ticked for email, so a valid email address is needed.` };
+  }
+  if (data.departmentId) {
+    const dept = db().prepare("SELECT id FROM departments WHERE id=? AND org_id=?").get(data.departmentId, orgId);
+    if (!dept) return { error: "That team no longer exists." };
+  }
+
+  // An id only ever updates a row of this org — never another tenant's.
+  const existing = data.id
+    ? (db().prepare("SELECT id, priority FROM transfer_targets WHERE id=? AND org_id=?").get(data.id, orgId) as
+        | { id: string; priority: number }
+        | undefined)
+    : undefined;
+  if (data.id && !existing) return { error: "That person no longer exists." };
+
+  const id = existing?.id ?? uid("xfer");
+  const values = [
+    name,
+    (data.role ?? "").trim() || "Team member",
+    phone,
+    (data.hours ?? "").trim() || null,
+    (data.whenToUse ?? "").trim() || DEFAULT_WHEN_TO_USE,
+    data.departmentId ?? null,
+    data.priority ?? existing?.priority ?? 0,
+    email || null,
+    normalisePhone(data.whatsapp ?? "") || null,
+    contactCalls ? 1 : 0,
+    contactEmail ? 1 : 0,
+  ];
+  const run = db().transaction(() => {
+    if (existing) {
+      db().prepare(
+        `UPDATE transfer_targets SET name=?, role=?, phone=?, hours=?, when_to_use=?, department_id=?, priority=?,
+           email=?, whatsapp=?, contact_calls=?, contact_email=? WHERE id=? AND org_id=?`,
+      ).run(...values, id, orgId);
+    } else {
+      db().prepare(
+        `INSERT INTO transfer_targets (name, role, phone, hours, when_to_use, department_id, priority, email, whatsapp, contact_calls, contact_email, id, org_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(...values, id, orgId);
+    }
+    // One default at a time.
+    if (data.isDefault === true) {
+      db().prepare("UPDATE transfer_targets SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END WHERE org_id=?").run(id, orgId);
+    } else if (data.isDefault === false) {
+      db().prepare("UPDATE transfer_targets SET is_default=0 WHERE id=? AND org_id=?").run(id, orgId);
+    }
+  });
+  run();
   return { id };
+}
+
+/** "98200 11122" → "+919820011122"; anything already international is kept. */
+function normalisePhone(raw: string) {
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  const digits = phoneDigits(cleaned);
+  if (!digits) return "";
+  if (cleaned.startsWith("+")) return `+${digits}`;
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 11 && digits.startsWith("0")) return `+91${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
+/** Find a person the way an owner refers to one: by id, name, or role. */
+export function findPerson(orgId: string, ref: string | undefined) {
+  const q = (ref ?? "").trim().toLowerCase();
+  if (!q) return undefined;
+  const people = transferTargets(orgId);
+  return (
+    people.find((p) => p.id === ref?.trim()) ??
+    people.find((p) => p.name.toLowerCase() === q) ??
+    people.find((p) => p.name.toLowerCase().includes(q) || q.includes(p.name.toLowerCase())) ??
+    people.find((p) => p.role.toLowerCase() === q)
+  );
 }
 
 export function deleteTransfer(orgId: string, id: string) {
@@ -271,6 +419,18 @@ export function deleteAppointmentType(orgId: string, id: string) {
   db().prepare("DELETE FROM appointment_types WHERE id=? AND org_id=?").run(id, orgId);
 }
 
+/** Find a bookable type the way an owner refers to one: by id or name. */
+export function findAppointmentType(orgId: string, ref: string | undefined) {
+  const q = (ref ?? "").trim().toLowerCase();
+  if (!q) return undefined;
+  const types = appointmentTypes(orgId);
+  return (
+    types.find((t) => t.id === ref?.trim()) ??
+    types.find((t) => t.name.toLowerCase() === q) ??
+    types.find((t) => t.name.toLowerCase().includes(q) || q.includes(t.name.toLowerCase()))
+  );
+}
+
 export function upsertDepartment(
   orgId: string,
   data: {
@@ -283,7 +443,10 @@ export function upsertDepartment(
     whatsapp?: string;
   },
 ) {
-  const slug = (data.slug ?? data.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  let slug = (data.slug ?? data.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  // "Unassigned" is the queue for work no team owns; a team an owner happens
+  // to call that gets its own row rather than taking the queue over.
+  if (!data.id && slug === UNASSIGNED_DEPARTMENT.slug) slug = `${slug}-team`;
   // Ids are per-row, never derived from the slug: two tenants both adding
   // "Billing" must not fight over one primary key. The (org_id, slug) unique
   // constraint is what makes this an upsert.
@@ -293,8 +456,11 @@ export function upsertDepartment(
   const existing = (data.id
     ? db().prepare("SELECT id, slug FROM departments WHERE org_id=? AND id=?").get(orgId, data.id)
     : db()
-        .prepare("SELECT id, slug FROM departments WHERE org_id=? AND (slug=? OR lower(name)=lower(?)) ORDER BY (slug=?) DESC LIMIT 1")
-        .get(orgId, slug, data.name.trim(), slug)) as { id: string; slug: string } | undefined;
+        .prepare("SELECT id, slug FROM departments WHERE org_id=? AND slug!=? AND (slug=? OR lower(name)=lower(?)) ORDER BY (slug=?) DESC LIMIT 1")
+        .get(orgId, UNASSIGNED_DEPARTMENT.slug, slug, data.name.trim(), slug)) as { id: string; slug: string } | undefined;
+
+  // The Unassigned queue is ours, not a team an owner edits.
+  if (existing?.slug === UNASSIGNED_DEPARTMENT.slug) return { id: existing.id, slug: existing.slug };
 
   if (existing) {
     // Fields not sent are left alone; an empty string clears one on purpose.
@@ -319,14 +485,51 @@ export function upsertDepartment(
   return { id, slug };
 }
 
-/** True once the org has any department beyond the auto-created General. */
-export function hasCustomDepartments(orgId: string) {
+/** The teams an owner set up — everything except the Unassigned queue. */
+export function teams(orgId: string) {
   return (db()
-    .prepare("SELECT COUNT(*) n FROM departments WHERE org_id=? AND slug!=?")
-    .get(orgId, GENERAL_DEPARTMENT.slug) as { n: number }).n > 0;
+    .prepare("SELECT id, slug, name, keywords, email, phone, whatsapp FROM departments WHERE org_id=? AND slug!=? ORDER BY name")
+    .all(orgId, UNASSIGNED_DEPARTMENT.slug) as Row[]).map((r) => ({
+    id: r.id as string,
+    slug: r.slug as string,
+    name: r.name as string,
+    keywords: JSON.parse((r.keywords as string) || "[]") as string[],
+    email: (r.email as string) ?? "",
+    phone: (r.phone as string) ?? "",
+    whatsapp: (r.whatsapp as string) ?? "",
+  }));
 }
 
-/** Suggested desks for the org's use case that it has not added yet. */
+/** Find a team the way an owner refers to one: by id, name, or slug. */
+export function findTeam(orgId: string, ref: string | undefined) {
+  const q = (ref ?? "").trim().toLowerCase();
+  if (!q) return undefined;
+  const all = teams(orgId);
+  return (
+    all.find((t) => t.id === ref?.trim()) ??
+    all.find((t) => t.name.toLowerCase() === q || t.slug === q) ??
+    all.find((t) => t.name.toLowerCase().includes(q) || q.includes(t.name.toLowerCase()))
+  );
+}
+
+/**
+ * The queue for work no team owns. Made the first time it is needed, so a
+ * business with no teams still never loses a complaint. Not a team: Setup,
+ * the agents and Swara do not see it.
+ */
+export function unassignedDepartment(orgId: string) {
+  const existing = db()
+    .prepare("SELECT id, slug, name FROM departments WHERE org_id=? AND slug=?")
+    .get(orgId, UNASSIGNED_DEPARTMENT.slug) as { id: string; slug: string; name: string } | undefined;
+  if (existing) return existing;
+  const id = uid("dept");
+  db()
+    .prepare("INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, ?, ?, '[]')")
+    .run(id, orgId, UNASSIGNED_DEPARTMENT.slug, UNASSIGNED_DEPARTMENT.name);
+  return { id, slug: UNASSIGNED_DEPARTMENT.slug as string, name: UNASSIGNED_DEPARTMENT.name as string };
+}
+
+/** Suggested teams for the org's use case that it has not added yet. */
 export function departmentSuggestions(orgId: string) {
   const useCase = playbook(orgId).extra.useCase;
   const have = new Set(
@@ -335,26 +538,43 @@ export function departmentSuggestions(orgId: string) {
   return suggestedDepartmentsFor(typeof useCase === "string" ? useCase : undefined).filter((s) => !have.has(s.slug));
 }
 
+/**
+ * Remove a team. Any team can go, including the last one: whatever it still
+ * owned — open or done — moves to the older General desk if the workspace
+ * kept one, otherwise to the Unassigned queue, and its people simply stop
+ * belonging to a team.
+ */
 export function deleteDepartment(orgId: string, id: string) {
-  const open = (db()
-    .prepare("SELECT COUNT(*) n FROM actions WHERE department_id=? AND status!='done'")
-    .get(id) as { n: number }).n;
-  if (open > 0) return { error: `${open} open actions still sit on this department` } as const;
-  const total = (db().prepare("SELECT COUNT(*) n FROM departments WHERE org_id=?").get(orgId) as { n: number }).n;
-  if (total <= 1) return { error: "Keep at least one department — unrouted complaints need somewhere to land" } as const;
-  // Complaints and tickets that pointed here fall back to whichever desk is
-  // left, rather than dangling at a department that no longer exists.
-  const fallback = db()
-    .prepare("SELECT id FROM departments WHERE org_id=? AND id!=? ORDER BY (slug=?) DESC, name LIMIT 1")
-    .get(orgId, id, GENERAL_DEPARTMENT.slug) as { id: string } | undefined;
-  if (fallback) {
-    db().prepare("UPDATE complaints SET department_id=? WHERE org_id=? AND department_id=?").run(fallback.id, orgId, id);
-    db().prepare("UPDATE actions SET department_id=? WHERE org_id=? AND department_id=?").run(fallback.id, orgId, id);
-    db().prepare("UPDATE transfer_targets SET department_id=NULL WHERE org_id=? AND department_id=?").run(orgId, id);
+  const dept = db().prepare("SELECT id, slug FROM departments WHERE id=? AND org_id=?").get(id, orgId) as
+    | { id: string; slug: string }
+    | undefined;
+  if (!dept) return { error: "That team no longer exists." } as const;
+  if (dept.slug === UNASSIGNED_DEPARTMENT.slug) {
+    return { error: "Unassigned is the queue for work no team owns, not a team — it cannot be removed." } as const;
   }
-  db().prepare("UPDATE users SET department_id=NULL WHERE department_id=?").run(id);
-  db().prepare("DELETE FROM departments WHERE id=? AND org_id=?").run(id, orgId);
-  return { error: null } as const;
+  const count = (table: "actions" | "complaints", extra = "") =>
+    (db().prepare(`SELECT COUNT(*) n FROM ${table} WHERE org_id=? AND department_id=? ${extra}`).get(orgId, id) as { n: number }).n;
+  const openActions = count("actions", "AND status!='done'");
+  const owned = count("actions") + count("complaints");
+
+  let movedTo: string | null = null;
+  const run = db().transaction(() => {
+    if (owned > 0) {
+      const general = db()
+        .prepare("SELECT id, name FROM departments WHERE org_id=? AND id!=? AND slug=?")
+        .get(orgId, id, GENERAL_DEPARTMENT.slug) as { id: string; name: string } | undefined;
+      const target = general ?? unassignedDepartment(orgId);
+      movedTo = target.name;
+      db().prepare("UPDATE complaints SET department_id=? WHERE org_id=? AND department_id=?").run(target.id, orgId, id);
+      db().prepare("UPDATE actions SET department_id=? WHERE org_id=? AND department_id=?").run(target.id, orgId, id);
+    }
+    db().prepare("UPDATE transfer_targets SET department_id=NULL WHERE org_id=? AND department_id=?").run(orgId, id);
+    db().prepare("UPDATE users SET department_id=NULL WHERE org_id=? AND department_id=?").run(orgId, id);
+    db().prepare("UPDATE invites SET department_id=NULL WHERE org_id=? AND department_id=?").run(orgId, id);
+    db().prepare("DELETE FROM departments WHERE id=? AND org_id=?").run(id, orgId);
+  });
+  run();
+  return { error: null, openMoved: openActions, movedTo: movedTo as string | null } as const;
 }
 
 export function upsertConnector(
@@ -476,14 +696,9 @@ export function provisionWorkspace(orgId: string) {
   const now = nowIso();
   const d = db();
 
-  // One desk, "General", so a complaint always has somewhere to land. The
-  // rest come from the owner (Setup → Departments) or from the use-case
-  // suggestions applied when they pick a business type — never from here.
-  if (!(d.prepare("SELECT COUNT(*) n FROM departments WHERE org_id=?").get(orgId) as { n: number }).n) {
-    d.prepare("INSERT INTO departments (id, org_id, slug, name, keywords) VALUES (?, ?, ?, ?, ?)").run(
-      uid("dept"), orgId, GENERAL_DEPARTMENT.slug, GENERAL_DEPARTMENT.name, JSON.stringify(GENERAL_DEPARTMENT.keywords),
-    );
-  }
+  // No teams are created here. A business without departments is a normal
+  // workspace; anything nobody owns goes to the Unassigned queue, which is
+  // made the first time it is needed (unassignedDepartment).
 
   // Every catalog voice gets a row; voices added to the catalog later are
   // filled in for existing orgs without touching the ones they have edited.
@@ -511,7 +726,7 @@ export function provisionWorkspace(orgId: string) {
 export function setupStatus(orgId: string) {
   const count = (sql: string) => (db().prepare(sql).get(orgId) as { n: number }).n;
   return {
-    departments: count("SELECT COUNT(*) n FROM departments WHERE org_id=?"),
+    departments: count(`SELECT COUNT(*) n FROM departments WHERE org_id=? AND slug!='${UNASSIGNED_DEPARTMENT.slug}'`),
     transfers: count("SELECT COUNT(*) n FROM transfer_targets WHERE org_id=?"),
     appointmentTypes: count("SELECT COUNT(*) n FROM appointment_types WHERE org_id=?"),
     knowledge: count("SELECT COUNT(*) n FROM knowledge_docs WHERE org_id=?"),

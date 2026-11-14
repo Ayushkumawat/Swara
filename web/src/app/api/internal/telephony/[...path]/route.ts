@@ -13,6 +13,7 @@
  *   POST /api/internal/telephony/tool        execute a tool the model called
  *   POST /api/internal/telephony/transcript  streaming transcript for the Live board
  *   POST /api/internal/telephony/complete    the call ended; bill it and run the pipeline
+ *   POST /api/internal/telephony/transfer-result  a live transfer was answered, or rang out
  */
 import { NextRequest, NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
@@ -29,6 +30,7 @@ import {
   ingestInboundReply,
   saveRecording,
   tagCampaignContact,
+  transferMissed,
 } from "@/lib/server/tickets";
 import { onCampaignCallEnded } from "@/lib/server/campaign-dialer";
 
@@ -182,6 +184,30 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     await finishCall({ orgId, callId, ...rest });
     await onCampaignCallEnded(orgId, callId, outcome);
     return json({ ok: true });
+  }
+
+  // The carrier's verdict on a live transfer. Answered: nothing to do — the
+  // person is on the call. Anything else: the caller has just been told to
+  // expect a callback, so the person is informed and a ticket carries it.
+  if (key === "transfer-result") {
+    const parsed = z
+      .object({
+        orgId: z.string(),
+        callId: z.string(),
+        answered: z.boolean(),
+        name: z.string().optional(),
+        status: z.string().max(40).optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) return json({ error: "Invalid transfer result" }, 400);
+    const { orgId, callId, answered, name, status } = parsed.data;
+    if (answered) return json({ ok: true, answered: true });
+    try {
+      return json({ ok: true, answered: false, ...(await transferMissed(orgId, callId, name, status)) });
+    } catch (error) {
+      console.error("[telephony] missed-transfer follow-up failed:", error);
+      return json({ ok: false, error: "Could not record the missed transfer" }, 500);
+    }
   }
 
   if (key === "recording") {

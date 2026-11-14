@@ -34,6 +34,7 @@ import { Waveform } from "@/components/ui/live";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { AGENT_TEMPLATES, templateById } from "@/lib/agents/templates";
 import { compileFlow, NODE_KIND_LABEL, newNode, validateFlow } from "@/lib/agents/flow";
+import { HUMAN_MODE_OPTIONS, HUMAN_MODE_SHORT, canConnectLive, informsAfterCall, usesLabels, type HumanMode } from "@/lib/agents/human-mode";
 import {
   qk,
   useAgentTemplates,
@@ -76,6 +77,7 @@ export default function AgentsPage() {
   const [tab, setTab] = useState<Tab>("flow");
   const [chosenId, setChosenId] = useState<string | null>(null);
   const openSwara = useUi((s) => s.openSwara);
+  const openBuild = useUi((s) => s.openBuild);
   const setSwaraContext = useUi((s) => s.setSwaraContext);
   const pendingAgentSelect = useUi((s) => s.pendingAgentSelect);
   const setPendingAgentSelect = useUi((s) => s.setPendingAgentSelect);
@@ -128,9 +130,12 @@ export default function AgentsPage() {
             <Button variant="ghost" onClick={() => setGallery(true)}>
               Templates
             </Button>
-            <Button variant="primary" onClick={() => openSwara()} title="Swara designs new agents from a description and changes existing ones">
+            <Button variant="ghost" onClick={() => openSwara()} title="Chat with Swara in the side pane — quick changes and questions">
+              Ask Swara
+            </Button>
+            <Button variant="primary" onClick={() => openBuild()} title="Describe your business, answer her questions, approve the plan">
               <Sparkles className="size-3.5" />
-              Swara
+              Build with Swara
             </Button>
           </>
         }
@@ -156,7 +161,7 @@ export default function AgentsPage() {
                     title="No agents yet"
                     body="Let Swara design them from a description of your business, or start from a template."
                     action={
-                      <Button size="sm" variant="primary" onClick={() => openSwara()}>
+                      <Button size="sm" variant="primary" onClick={() => openBuild()}>
                         <Sparkles className="size-3.5" /> Build with Swara
                       </Button>
                     }
@@ -282,6 +287,11 @@ export default function AgentsPage() {
   );
 }
 
+/** Only people with Calls ticked can be a Transfer step's target. */
+function callTakers(people: { name: string; contactCalls: boolean }[] | undefined) {
+  return (people ?? []).filter((p) => p.contactCalls).map((p) => p.name);
+}
+
 function PublishButton({ agent, onDone }: { agent: Agent; onDone: () => void }) {
   const transfers = useTransfers();
   const appointments = useAppointmentTypes();
@@ -291,11 +301,12 @@ function PublishButton({ agent, onDone }: { agent: Agent; onDone: () => void }) 
   const errors = useMemo(
     () =>
       validateFlow(agent.nodes, agent.edges, {
-        transfers: (transfers.data ?? []).map((t) => t.name),
+        transfers: callTakers(transfers.data),
         appointmentTypes: (appointments.data ?? []).map((a) => a.name),
         agents: (agents.data ?? []).map((a) => ({ id: a.id, name: a.name })),
+        liveTransfer: canConnectLive(agent.humanMode),
       }).filter((i) => i.level === "error"),
-    [agent.nodes, agent.edges, transfers.data, appointments.data, agents.data],
+    [agent.nodes, agent.edges, agent.humanMode, transfers.data, appointments.data, agents.data],
   );
 
   return (
@@ -402,8 +413,8 @@ function TemplateGallery({ onClose, onCreated }: { onClose: () => void; onCreate
           <div>
             <h2 className="font-[family-name:var(--font-display)] text-[16px] font-semibold text-t1">Start from a template</h2>
             <p className="mt-1 text-[12px] text-t3">
-              Each template ships a graph and a prompt. Finish Workspace setup for the features it needs — transfers,
-              slots, departments, orders.
+              Each template ships a graph and a prompt. Switch on what it needs in Workspace setup — people to reach,
+              appointment types, order lookups.
             </p>
           </div>
           <Button size="sm" variant="subtle" onClick={onClose}>
@@ -426,9 +437,9 @@ function TemplateGallery({ onClose, onCreated }: { onClose: () => void; onCreate
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <Pill tone="violet">{INTENT_LABEL[t.intent]}</Pill>
                 <Pill>{t.direction}</Pill>
-                {t.needs.map((n) => (
+                {usesLabels(t.needs).map((n) => (
                   <Pill key={n} tone="amber">
-                    needs {n}
+                    uses {n}
                   </Pill>
                 ))}
               </div>
@@ -489,6 +500,9 @@ function AgentRow({ agent, active, onClick, onDelete }: { agent: Agent; active: 
             {agent.direction} · {agent.nodes.length ? `${agent.nodes.length} steps` : "prompt only"}
             {agent.callsToday > 0 ? ` · ${agent.callsToday} calls` : ""}
           </span>
+        </span>
+        <span className="mt-1 block truncate text-[10.5px] text-t3" title="When a call needs a person — change it in the Agent role tab">
+          Person: {HUMAN_MODE_SHORT[agent.humanMode]}
         </span>
       </span>
     </div>
@@ -582,13 +596,19 @@ function FlowTab({ agent, allAgents }: { agent: Agent; allAgents: Agent[] }) {
   }, []);
 
   const siblings = useMemo(() => allAgents.filter((a) => a.id !== agent.id).map((a) => ({ id: a.id, name: a.name })), [allAgents, agent.id]);
-  const transferNames = (transfers.data ?? []).map((t) => t.name);
+  const transferNames = callTakers(transfers.data);
   const appointmentNames = (appointments.data ?? []).map((a) => a.name);
 
   const issues = useMemo(
-    () => validateFlow(graph.nodes, graph.edges, { transfers: transferNames, appointmentTypes: appointmentNames, agents: siblings }),
+    () =>
+      validateFlow(graph.nodes, graph.edges, {
+        transfers: transferNames,
+        appointmentTypes: appointmentNames,
+        agents: siblings,
+        liveTransfer: canConnectLive(agent.humanMode),
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [graph, transfers.data, appointments.data, siblings],
+    [graph, agent.humanMode, transfers.data, appointments.data, siblings],
   );
   const issueByNode = useMemo(() => {
     const m: Record<string, { level: "error" | "warn"; message: string }> = {};
@@ -597,8 +617,13 @@ function FlowTab({ agent, allAgents }: { agent: Agent; allAgents: Agent[] }) {
   }, [issues]);
 
   const compiled = useMemo(
-    () => compileFlow(graph.nodes, graph.edges, { agents: siblings, allowTransfer: transferNames.length > 0 }),
-    [graph, siblings, transferNames.length],
+    () =>
+      compileFlow(graph.nodes, graph.edges, {
+        agents: siblings,
+        allowTransfer: canConnectLive(agent.humanMode) && transferNames.length > 0,
+        informAfter: informsAfterCall(agent.humanMode),
+      }),
+    [graph, siblings, transferNames.length, agent.humanMode],
   );
   const [showCompiled, setShowCompiled] = useState(false);
 
@@ -835,13 +860,26 @@ function PromptTab({ agent }: { agent: Agent }) {
   const [prompt, setPrompt] = useState(agent.prompt ?? "");
   const [personaName, setPersonaName] = useState(agent.personaName ?? "");
   const [voice, setVoice] = useState(agent.voice ?? "");
+  const [humanMode, setHumanMode] = useState<HumanMode>(agent.humanMode);
   const [busy, setBusy] = useState(false);
-  const identityDirty = personaName !== (agent.personaName ?? "") || voice !== (agent.voice ?? "");
+  const transfers = useTransfers();
+  const identityDirty =
+    personaName !== (agent.personaName ?? "") || voice !== (agent.voice ?? "") || humanMode !== agent.humanMode;
+  const people = transfers.data ?? [];
+  const takesCalls = people.some((p) => p.contactCalls);
+  // Say what the setting will actually do with the people listed today.
+  const modeNote = !transfers.data
+    ? null
+    : people.length === 0 && humanMode !== "never"
+      ? "Nobody is listed in Workspace setup → People & teams yet, so there is no one to connect or inform."
+      : canConnectLive(humanMode) && !takesCalls
+        ? "Nobody listed takes calls, so callers cannot be connected live yet — tick Calls for a person in Workspace setup."
+        : null;
 
   const save = async () => {
     setBusy(true);
     try {
-      if (!IS_MOCK) await mutations.updateAgent(agent.id, { prompt, personaName, ...(voice ? { voice } : {}) });
+      if (!IS_MOCK) await mutations.updateAgent(agent.id, { prompt, personaName, humanMode, ...(voice ? { voice } : {}) });
       toast.success("Role saved — live on the next test call");
       void qc.invalidateQueries({ queryKey: qk.agents });
     } catch {
@@ -863,7 +901,14 @@ function PromptTab({ agent }: { agent: Agent }) {
           <Select value={voice} onChange={setVoice} options={voiceOptions} placeholder="Default for this job" />
         </Field>
       </div>
-      {identityDirty ? <p className="-mt-2 text-[11px] text-amber">Unsaved — Save role writes name and voice too.</p> : null}
+      <Field
+        label="When a call needs a person"
+        hint={HUMAN_MODE_OPTIONS.find((o) => o.value === humanMode)?.hint}
+      >
+        <Select value={humanMode} onChange={setHumanMode} options={HUMAN_MODE_OPTIONS} />
+      </Field>
+      {modeNote ? <p className="-mt-2 text-[11px] text-amber">{modeNote}</p> : null}
+      {identityDirty ? <p className="-mt-2 text-[11px] text-amber">Unsaved — Save role writes name, voice and this setting too.</p> : null}
       <Field
         label="Agent role"
         hint="Only what is specific to this job: the opening line, the details it needs, the situations this business sees. Write {name} where the agent says its own name. Phone manners, language follow, the flow and tool rules are added on every call — do not repeat them here."
@@ -891,7 +936,8 @@ function PromptTab({ agent }: { agent: Agent }) {
           ))}
         </div>
         <p className="mt-2 text-[11px] text-t3">
-          Only these run on a call. A transfer is included only when a human desk exists. Language is not set here —
+          Only these run on a call. A live transfer is included only when this agent connects callers live and someone
+          in Workspace setup takes calls. Language is not set here —
           the agent follows whatever language the caller is speaking, and switches when they do.
         </p>
       </div>

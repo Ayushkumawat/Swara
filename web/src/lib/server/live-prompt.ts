@@ -8,16 +8,21 @@ import { VOICE_PREVIEW_AGENT_ID, voiceByName, voiceCraft } from "@/lib/live/voic
 import { compileFlow } from "@/lib/agents/flow";
 import { NAME_PLACEHOLDER, defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
 import { SWARA_AGENT_ID, SWARA_GREETING, SWARA_PERSONA_NAME, SWARA_SYSTEM_PROMPT, SWARA_TOOL_RULES, SWARA_VOICE } from "@/lib/agents/swara";
-import { appointmentTypes, playbook, transferTargets, voices as orgVoices } from "./workspace";
+import { appointmentTypes, playbook, teams, transferTargets, voices as orgVoices } from "./workspace";
+import { canConnectLive, informsAfterCall, normaliseHumanMode, type HumanMode } from "@/lib/agents/human-mode";
 import type { FlowEdge, FlowNode } from "@/lib/api/schemas";
 
 /**
  * Builds the system instruction for a live session from the tenant's own
- * rows — voice craft, transfer desks, appointment types, departments, the
- * compiled flow graph, and the directory of sibling agents it may hand off
- * to — plus the agent persona. An empty transfer list becomes an instruction
- * not to offer a transfer, which is how we stop the model inventing a
- * person we cannot reach.
+ * rows — voice craft, people, appointment types, teams, the compiled flow
+ * graph, and the directory of sibling agents it may hand off to — plus the
+ * agent persona.
+ *
+ * What the agent may do about a person comes from two places: the agent's
+ * own setting (connect live / inform after the call / both / never) and who
+ * the business listed (and whether each takes calls). An agent with nobody
+ * to connect to is told not to offer a transfer, which is how we stop the
+ * model inventing a person we cannot reach.
  */
 export type ComposedPrompt = {
   name: string;
@@ -59,6 +64,7 @@ export function composeLivePrompt(
         voice_live_name: string | null;
         persona_name: string | null;
         tools: string | null;
+        human_mode: string | null;
       }
     | undefined;
 
@@ -94,11 +100,18 @@ export function composeLivePrompt(
   const role = rawRole.split(NAME_PLACEHOLDER).join(persona);
 
   const book = playbook(orgId);
-  const transfers = book.extra.humanEscalation === false ? [] : transferTargets(orgId);
+  // A built-in demo agent has no row and no setting; it keeps the behaviour
+  // it always had (live transfer only).
+  const mode: HumanMode =
+    book.extra.humanEscalation === false ? "never" : stored ? normaliseHumanMode(stored.human_mode) : "live";
+  const people = mode === "never" ? [] : transferTargets(orgId);
+  const departments = teams(orgId);
+  // Who can be put on this call, and whether anyone hears about it afterwards.
+  const transfers = canConnectLive(mode) ? people.filter((p) => p.contactCalls) : [];
+  const informAfter =
+    informsAfterCall(mode) &&
+    (people.some((p) => p.contactCalls || p.contactEmail) || departments.some((d) => d.email || d.phone));
   const slots = appointmentTypes(orgId);
-  const departments = getDb()
-    .prepare("SELECT name, keywords, email, phone, whatsapp FROM departments WHERE org_id=?")
-    .all(orgId) as { name: string; keywords: string; email: string | null; phone: string | null; whatsapp: string | null }[];
   const siblings = (getDb()
     .prepare("SELECT id, name, intent, prompt FROM agents WHERE org_id=? AND id!=?")
     .all(orgId, agentId) as { id: string; name: string; intent: string; prompt: string | null }[]);
@@ -109,6 +122,7 @@ export function composeLivePrompt(
   const flow = compileFlow(nodes, edges, {
     agents: siblings,
     allowTransfer: transfers.length > 0,
+    informAfter,
     concise: hasCustomRole,
   });
 
@@ -133,8 +147,15 @@ export function composeLivePrompt(
             (t) =>
               `- ${t.name} (${t.role}${t.department ? `, ${t.department}` : ""}${t.hours ? `, ${t.hours}` : ""}): ${t.whenToUse}`,
           ),
+          ...(informAfter
+            ? [
+                "AFTER THE CALL: anything you file is passed to the person who owns it automatically once the call ends. You do not need to notify them yourself unless the caller needs them told right now.",
+              ]
+            : []),
         ].join("\n")
-      : "TRANSFER: no human desk is configured. Do not offer a live transfer; take a callback instead.",
+      : informAfter
+        ? "PEOPLE: you cannot connect the caller to a person on this call, so do not offer a transfer. When something needs a person, take down what they need and file it. The right person is informed automatically as soon as the call ends and will get back to them — say that plainly, and do not promise a time you were not given."
+        : "TRANSFER: no human desk is configured. Do not offer a live transfer; take a callback instead.",
     slots.length
       ? [
           "APPOINTMENT TYPES you may book — never invent a type or a time outside these hours:",
@@ -181,8 +202,21 @@ export function composeLivePrompt(
   // When a designated person or department desk calls in (or is called),
   // ensure ticket inspection, update, and resolution tools are always active.
   const staffTools = isStaffCaller ? ["lookup_ticket", "update_ticket", "resolve_ticket"] : [];
-  const tools = [...new Set([...baseTools, ...flowTools, ...staffTools, "end_call"])].filter((t) =>
-    t === "transfer_to_human" ? transfers.length > 0 : t === "handoff_to_agent" ? directory.length > 0 : true,
+  // "Take it down and the right person is told afterwards" needs somewhere
+  // to take it down. A front door is the exception: it hands the caller to
+  // the agent that owns the topic and that agent files it.
+  const isFrontDoor = nodes.some((n) => n.kind === "handoff") && stored?.intent === "other";
+  const noteTools = informAfter && transfers.length === 0 && !isFrontDoor ? ["register_complaint"] : [];
+  const tools = [...new Set([...baseTools, ...flowTools, ...staffTools, ...noteTools, "end_call"])].filter((t) =>
+    t === "transfer_to_human"
+      ? transfers.length > 0
+      : t === "handoff_to_agent"
+        ? directory.length > 0
+        : // Telling someone mid-call is for agents that work with people
+          // during the call. "After" means after; "never" means nobody.
+          t === "notify_stakeholder"
+          ? isStaffCaller || canConnectLive(mode)
+          : true,
   );
 
   const greetingText = (builtin?.greeting ?? `${persona} speaking. How can I help?`)
@@ -307,7 +341,7 @@ function looksLikePersonName(name: string) {
  */
 function composeSwara(orgId: string): ComposedPrompt {
   const book = playbook(orgId);
-  const departments = (getDb().prepare("SELECT name FROM departments WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name);
+  const departments = teams(orgId).map((t) => t.name);
   const transfers = transferTargets(orgId);
   const slots = appointmentTypes(orgId);
   const agents = (getDb().prepare("SELECT name FROM agents WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name);
@@ -317,8 +351,12 @@ function composeSwara(orgId: string): ComposedPrompt {
     "WHAT THE WORKSPACE ALREADY HAS (do not ask for these again; build on them):",
     `- Business: ${book.businessType || "not described yet"}${book.extra.useCase ? ` (${String(book.extra.useCase)})` : ""}`,
     `- Hours: ${book.hours || "not set"}`,
-    `- Departments: ${departments.join(", ") || "none"}`,
-    `- Transfer desks: ${transfers.map((t) => `${t.name} (${t.role})`).join(", ") || "none"}`,
+    `- People: ${
+      transfers
+        .map((t) => `${t.name} (${t.role}; ${[t.contactCalls ? "calls" : "", t.contactEmail ? "email" : ""].filter(Boolean).join(" + ") || "no contact"}${t.isDefault ? "; default contact" : ""})`)
+        .join(", ") || "none"
+    }`,
+    `- Teams (optional): ${departments.join(", ") || "none"}`,
     `- Bookable: ${slots.map((s) => s.name).join(", ") || "none"}`,
     `- Knowledge documents: ${knowledge}`,
     `- Agents: ${agents.join(", ") || "none yet"}`,

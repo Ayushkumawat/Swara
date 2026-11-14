@@ -140,6 +140,7 @@ export const agents: Agent[] = [
     direction: "both",
     voiceId: "v_ananya",
     mode: "graph",
+    humanMode: "both",
     version: 12,
     callsToday: 842,
     resolutionRate: 0.93,
@@ -155,6 +156,7 @@ export const agents: Agent[] = [
     direction: "inbound",
     voiceId: "v_ananya",
     mode: "prompt",
+    humanMode: "both",
     prompt:
       "You are Swara, the support voice for a quick-commerce brand. Greet in the caller's language. Look up their most recent order with the order_status tool before answering. Never invent a delivery date — if the tool fails, apologise and offer a callback.",
     version: 8,
@@ -173,6 +175,7 @@ export const agents: Agent[] = [
     direction: "outbound",
     voiceId: "v_karthik",
     mode: "graph",
+    humanMode: "both",
     version: 3,
     callsToday: 0,
     resolutionRate: 0,
@@ -189,6 +192,7 @@ export const agents: Agent[] = [
     direction: "inbound",
     voiceId: "v_meera",
     mode: "graph",
+    humanMode: "both",
     version: 21,
     callsToday: 318,
     resolutionRate: 0.81,
@@ -205,6 +209,7 @@ export const agents: Agent[] = [
     direction: "both",
     voiceId: "v_ananya",
     mode: "graph",
+    humanMode: "both",
     version: 5,
     callsToday: 47,
     resolutionRate: 0.88,
@@ -221,6 +226,7 @@ export const agents: Agent[] = [
     direction: "outbound",
     voiceId: "v_karthik",
     mode: "prompt",
+    humanMode: "both",
     prompt:
       "Remind the customer about a pending cash-on-delivery amount politely. State the amount and order id once. Offer a prepaid payment link over SMS. Do not call before 9am or after 9pm.",
     version: 6,
@@ -718,12 +724,12 @@ export const notifications: AppNotification[] = [
 /* ── Departments & action queue ─────────────────────────────────────────── */
 
 export const departments: Department[] = [
-  { id: "dept_support", slug: "support", name: "Customer Support", openActions: 3 },
-  { id: "dept_logistics", slug: "logistics", name: "Logistics & Delivery", openActions: 2 },
-  { id: "dept_technical", slug: "technical", name: "Technical / Maintenance", openActions: 1 },
-  { id: "dept_cleaning", slug: "cleaning", name: "Cleaning & Housekeeping", openActions: 1 },
-  { id: "dept_payments", slug: "payments", name: "Payments & Billing", openActions: 2 },
-  { id: "dept_security", slug: "security", name: "Security & Safety", openActions: 0 },
+  { id: "dept_support", slug: "support", name: "Customer Support", openActions: 3, system: false },
+  { id: "dept_logistics", slug: "logistics", name: "Logistics & Delivery", openActions: 2, system: false },
+  { id: "dept_technical", slug: "technical", name: "Technical / Maintenance", openActions: 1, system: false },
+  { id: "dept_cleaning", slug: "cleaning", name: "Cleaning & Housekeeping", openActions: 1, system: false },
+  { id: "dept_payments", slug: "payments", name: "Payments & Billing", openActions: 2, system: false },
+  { id: "dept_security", slug: "security", name: "Security & Safety", openActions: 0, system: false },
 ];
 
 export const actionQueue: ActionItem[] = [

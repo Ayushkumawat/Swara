@@ -96,7 +96,14 @@ export function NodeInspector({
       ) : null}
 
       {node.kind === "escalate" ? (
-        <Field label="Transfer desk" hint={transfers.length ? undefined : "No desk configured — add one in Workspace setup → Transfers, or the agent takes a callback."}>
+        <Field
+          label="Connect the caller to"
+          hint={
+            transfers.length
+              ? "People with Calls ticked in Workspace setup. If they do not pick up, they are informed after the call."
+              : "Nobody takes calls yet — add a person and tick Calls in Workspace setup → People & teams. Until then the agent takes the details and the right person is informed after the call."
+          }
+        >
           <Select
             size="sm"
             value={cfg.transferTarget ?? ""}

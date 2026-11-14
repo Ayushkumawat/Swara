@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import html
 import json
 import os
 import secrets
@@ -159,6 +160,10 @@ class Call:
     handoff_marker: str | None = None
     ending: bool = False
     bridged: bool = False  # human listen/takeover: stream may drop without ending the PSTN leg
+    # Who the agent is connecting the caller to, while that transfer is in
+    # flight. Set only for agent-initiated transfers; cleared once the
+    # carrier's verdict (answered / rang out) has been passed to the console.
+    transfer_to: str | None = None
     briefing: str | None = None
     campaign_id: str | None = None
     campaign_contact_id: str | None = None
@@ -286,12 +291,63 @@ async def transfer_xml() -> Response:
   <Conference startConferenceOnEnter="true" endConferenceOnExit="false">{conference}</Conference>
 </Response>"""
         return Response(xml, mimetype="application/xml")
+    # `action` is where Plivo goes when the dial is over, with DialStatus
+    # saying how it ended. That is how we learn a transfer rang out — and how
+    # the caller stops hearing "could not be reached" after a transfer that
+    # was answered and simply finished.
+    call_id = request.args.get("call", "")
+    action = ""
+    if call_id:
+        result_url = _public_http_abs("/plivo/transfer-result?" + urlencode({"call": call_id}))
+        action = f' action="{html.escape(result_url, quote=True)}" method="POST"'
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="{caller_id}" timeout="30"><Number>{to}</Number></Dial>
-  <Speak>The line could not be reached. We will call you back.</Speak>
+  <Dial callerId="{html.escape(caller_id, quote=True)}" timeout="30"{action}><Number>{html.escape(to)}</Number></Dial>
+  <Speak>{MISSED_TRANSFER_LINE}</Speak>
 </Response>"""
     return Response(xml, mimetype="application/xml")
+
+
+# Spoken by the carrier, not the model, so it is one fixed line. It promises
+# only what is certain: the request is on record and a callback follows.
+MISSED_TRANSFER_LINE = "Sorry, they could not take the call right now. Your request has been noted and you will get a call back shortly."
+# What Plivo reports in DialStatus when the person did not end up on the call.
+NOT_ANSWERED = {"busy", "failed", "timeout", "no-answer", "cancel"}
+
+
+@app.route("/plivo/transfer-result", methods=["GET", "POST"])
+async def transfer_result() -> Response:
+    """Plivo tells us how a warm transfer's dial ended; say the right thing next."""
+    form = await request.form
+    params = {**request.args.to_dict(), **form.to_dict()}
+    status = str(params.get("DialStatus") or "").strip().lower()
+    call_id = params.get("call", "")
+    # Trust our own record of the call, not the query string: only a call
+    # this bridge is transferring right now can report a result.
+    call = CALLS_BY_ID.get(call_id) or next((c for c in CALLS.values() if c.call_id == call_id), None)
+    log(f"[{call.key if call else call_id}] transfer result DialStatus={status or '?'} hangup={params.get('DialHangupCause', '?')}")
+
+    missed = status in NOT_ANSWERED
+    if call and call.call_id and call.transfer_to is not None and (missed or status == "completed"):
+        name, call.transfer_to = call.transfer_to, None
+        try:
+            await console.post("transfer-result", compact({
+                "orgId": call.org_id,
+                "callId": call.call_id,
+                "answered": not missed,
+                "name": name or None,
+                "status": status,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            log(f"[{call.key}] could not report transfer result: {exc}")
+
+    if missed:
+        body = f"<Speak>{MISSED_TRANSFER_LINE}</Speak><Hangup/>"
+    else:
+        # Answered and finished (or a status we do not recognise): nothing
+        # more to say to the caller.
+        body = "<Hangup/>"
+    return Response(f'<?xml version="1.0" encoding="UTF-8"?><Response>{body}</Response>', mimetype="application/xml")
 
 
 # ── Outbound ───────────────────────────────────────────────────────────────────
@@ -420,7 +476,9 @@ async def intervene() -> Response:
         if action == "takeover":
             await takeover_call(call, phone)
         else:
-            await transfer_after_drain(call, None, {"phone": phone, "name": "supervisor"})
+            # A supervisor chose this number by hand; there is no listed
+            # person to inform if it rings out.
+            await transfer_after_drain(call, None, {"phone": phone, "name": "supervisor", "report": False})
         return Response(json.dumps({"ok": True}), mimetype="application/json")
     except Exception as exc:  # noqa: BLE001
         return Response(json.dumps({"error": str(exc)}), status=502, mimetype="application/json")
@@ -807,7 +865,12 @@ async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any
         return
     call.bridged = True
     call.ending = True
-    url = _public_http_abs("/plivo/transfer?" + urlencode({"to": to, "callerId": _e164_digits(PLIVO_FROM_NUMBER)}))
+    call.transfer_to = str(control.get("name") or "") if control.get("report", True) else None
+    url = _public_http_abs("/plivo/transfer?" + urlencode(compact({
+        "to": to,
+        "callerId": _e164_digits(PLIVO_FROM_NUMBER),
+        "call": call.call_id,
+    })))
     try:
         client = _plivo()
         await asyncio.to_thread(client.calls.transfer, call.plivo_uuid, legs="aleg", aleg_url=url, aleg_method="GET")
@@ -815,6 +878,7 @@ async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any
     except Exception as exc:  # noqa: BLE001
         log(f"[{call.key}] transfer failed: {exc}")
         call.bridged = False
+        call.transfer_to = None
 
 
 def _public_http_abs(path: str) -> str:

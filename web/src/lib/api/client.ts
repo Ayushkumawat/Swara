@@ -114,10 +114,11 @@ const MOCK_ROUTES: Record<string, () => unknown> = {
     useCase: "ecommerce",
     hasSales: false,
     humanEscalation: true,
+    features: { complaints: true, appointments: true, orders: true },
   }),
   "/setup": () => ({ departments: 6, transfers: 1, appointmentTypes: 1, knowledge: 3, connectors: 1, voices: 5, agents: 6 }),
   "/setup/transfers": () => [
-    { id: "xfer_demo", name: "Priya Desai", role: "Support lead", phone: "+919820011122", hours: "10:00-19:00 IST", whenToUse: "Angry caller or they asked for a supervisor", departmentId: "dept_support", department: "Customer Support", priority: 0 },
+    { id: "xfer_demo", name: "Priya Desai", role: "Support lead", phone: "+919820011122", hours: "10:00-19:00 IST", whenToUse: "Angry caller or they asked for a supervisor", departmentId: "dept_support", department: "Customer Support", priority: 0, email: "priya@example.in", contactCalls: true, contactEmail: true, isDefault: true },
   ],
   "/setup/appointments": () => [
     { id: "apt_demo", name: "Home delivery slot", durationMin: 60, hours: "10:00-21:00", days: ["mon", "tue", "wed", "thu", "fri", "sat"], location: "Caller address", bufferMin: 15, notes: "Offer two windows" },
@@ -294,7 +295,12 @@ export const mutations = {
   deleteNumber: (id: string) =>
     apiSend("DELETE", `/numbers/${id}`, {}, z.object({ ok: z.boolean() })),
   deleteDepartment: (id: string) =>
-    apiSend("DELETE", `/departments/${id}`, {}, z.object({ ok: z.boolean() }).or(z.object({ error: z.string() }))),
+    apiSend(
+      "DELETE",
+      `/departments/${id}`,
+      {},
+      z.object({ ok: z.boolean(), movedTo: z.string().nullable().optional(), openMoved: z.number().optional() }),
+    ),
   saveTransfer: (body: unknown) =>
     apiSend("POST", "/setup/transfers", body, z.object({ id: z.string() })),
   deleteTransfer: (id: string) =>

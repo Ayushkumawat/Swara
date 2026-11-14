@@ -19,16 +19,27 @@ import {
 } from "./tickets";
 import {
   appointmentTypes,
+  deleteAppointmentType,
+  deleteDepartment,
+  deleteTransfer,
+  findAppointmentType,
+  findPerson,
+  findTeam,
+  liveTransferPeople,
   logToolInvocation,
   playbook,
+  publicPlaybook,
   setupStatus,
+  teams,
   transferTargets,
   upsertAppointmentType,
   upsertDepartment,
   upsertPlaybook,
   upsertTransfer,
+  type Person,
 } from "./workspace";
 import { planAgents } from "./planner";
+import { HUMAN_MODES, HUMAN_MODE_SHORT, canConnectLive, normaliseHumanMode, type HumanMode } from "@/lib/agents/human-mode";
 
 /**
  * The agent's hands.
@@ -102,20 +113,8 @@ async function runTool(
 
     // Swara's setup tools. Each writes a workspace row and returns what was
     // saved, so she can confirm it in half a sentence.
-    case "get_setup_status": {
-      const s = setupStatus(orgId);
-      const d = getDb();
-      return {
-        business: s.playbook.businessType || "not described yet",
-        use_case: String(s.playbook.extra.useCase ?? "not set"),
-        hours: s.playbook.hours,
-        departments: (d.prepare("SELECT name FROM departments WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name),
-        transfer_desks: transferTargets(orgId).map((t) => `${t.name} (${t.role})`),
-        appointment_types: appointmentTypes(orgId).map((a) => a.name),
-        knowledge_docs: s.knowledge,
-        agents: (d.prepare("SELECT name FROM agents WHERE org_id=?").all(orgId) as { name: string }[]).map((r) => r.name),
-      };
-    }
+    case "get_setup_status":
+      return setupSnapshot(orgId);
     case "save_playbook": {
       const p = upsertPlaybook(orgId, {
         businessType: str(args.business_type),
@@ -126,31 +125,114 @@ async function runTool(
         useCase: str(args.use_case),
         hasSales: typeof args.has_sales === "boolean" ? args.has_sales : undefined,
         humanEscalation: typeof args.human_escalation === "boolean" ? args.human_escalation : undefined,
+        features: {
+          ...(typeof args.takes_complaints === "boolean" ? { complaints: args.takes_complaints } : {}),
+          ...(typeof args.takes_appointments === "boolean" ? { appointments: args.takes_appointments } : {}),
+          ...(typeof args.looks_up_orders === "boolean" ? { orders: args.looks_up_orders } : {}),
+        },
       });
       return { saved: true, business: p.businessType, use_case: p.extra.useCase ?? "other", hours: p.hours };
     }
     case "add_department": {
       const name = str(args.name);
-      if (!name) return { error: "Department needs a name." };
-      const r = upsertDepartment(orgId, { name, keywords: strList(args.keywords) });
+      if (!name) return { error: "A team needs a name." };
+      const r = upsertDepartment(orgId, { name, keywords: strList(args.keywords), email: str(args.email) });
       return { saved: true, department: name, id: r.id };
     }
+    case "update_department": {
+      const team = findTeam(orgId, str(args.department));
+      if (!team) return { error: `No team called ${str(args.department) ?? "that"}. Teams: ${teams(orgId).map((t) => t.name).join(", ") || "none"}.` };
+      const name = str(args.name) ?? team.name;
+      upsertDepartment(orgId, {
+        id: team.id,
+        name,
+        keywords: strList(args.keywords) ?? team.keywords,
+        email: typeof args.email === "string" ? args.email.trim() : team.email,
+        phone: team.phone,
+        whatsapp: team.whatsapp,
+      });
+      return { saved: true, department: name, note: "Tell the owner what changed in one line." };
+    }
+    case "remove_department": {
+      const team = findTeam(orgId, str(args.department));
+      if (!team) return { error: `No team called ${str(args.department) ?? "that"}. Teams: ${teams(orgId).map((t) => t.name).join(", ") || "none"}.` };
+      if (args.confirmed !== true) {
+        return { removed: false, note: `Ask the owner to confirm removing the ${team.name} team first. Its open work would move to the Unassigned queue; its people stay.` };
+      }
+      const res = deleteDepartment(orgId, team.id);
+      if (res.error) return { error: res.error };
+      return {
+        removed: true,
+        department: team.name,
+        note: res.movedTo ? `Its tickets and follow-ups moved to ${res.movedTo}${res.openMoved ? ` (${res.openMoved} still open)` : ""}.` : "It owned no work.",
+      };
+    }
     case "add_transfer_target": {
-      const phone = str(args.phone)?.replace(/[^\d+]/g, "") ?? "";
-      if (phone.replace(/\D/g, "").length < 10) return { error: "That number is too short. Ask for the full 10-digit mobile and read it back." };
-      const deptName = str(args.department)?.toLowerCase();
-      const dept = deptName
-        ? (getDb().prepare("SELECT id FROM departments WHERE org_id=? AND lower(name)=?").get(orgId, deptName) as { id: string } | undefined)
-        : undefined;
+      const name = str(args.name);
+      if (!name) return { error: "A person needs a name." };
+      if (findPerson(orgId, name)?.name.toLowerCase() === name.toLowerCase()) {
+        return { error: `${name} is already listed. Use update_person to change their details.` };
+      }
+      const dept = teamByName(orgId, str(args.department));
+      if (dept === null) return { error: `No team called ${str(args.department)}. Add the team first, or leave the team out.` };
       const r = upsertTransfer(orgId, {
-        name: str(args.name) ?? "On-call",
-        role: str(args.role) ?? "Escalation",
-        phone: phone.startsWith("+") ? phone : phone.length === 10 ? `+91${phone}` : `+${phone}`,
+        name,
+        role: str(args.role),
+        phone: str(args.phone),
+        email: str(args.email),
+        contactCalls: bool(args.takes_calls),
+        contactEmail: bool(args.takes_email),
+        isDefault: bool(args.is_default),
         hours: str(args.hours),
-        whenToUse: str(args.when_to_use) ?? "Caller asked for a person, or the agent is stuck",
+        whenToUse: str(args.when_to_use),
         departmentId: dept?.id ?? null,
       });
-      return { saved: true, desk: args.name, id: r.id, note: "Agents may now transfer to this person." };
+      if (r.error) return { error: r.error };
+      const saved = findPerson(orgId, r.id);
+      return { saved: true, person: saved ? personLine(saved) : name, note: reachNote(saved) };
+    }
+    case "update_person": {
+      const person = findPerson(orgId, str(args.person));
+      if (!person) return { error: `Nobody called ${str(args.person) ?? "that"} is listed. People: ${transferTargets(orgId).map((p) => p.name).join(", ") || "none"}.` };
+      const dept = typeof args.department === "string" ? (args.department.trim() ? teamByName(orgId, args.department) : undefined) : { id: person.departmentId };
+      if (dept === null) return { error: `No team called ${str(args.department)}. Add the team first.` };
+      const phone = str(args.phone) ?? person.phone;
+      const email = str(args.email) ?? person.email;
+      const r = upsertTransfer(orgId, {
+        id: person.id,
+        name: str(args.name) ?? person.name,
+        role: str(args.role) ?? person.role,
+        phone,
+        email,
+        whatsapp: person.whatsapp,
+        // Giving a number or an address for the first time switches that
+        // channel on, unless the owner said otherwise.
+        contactCalls: bool(args.takes_calls) ?? (person.contactCalls || (Boolean(str(args.phone)) && !person.phone)),
+        contactEmail: bool(args.takes_email) ?? (person.contactEmail || (Boolean(str(args.email)) && !person.email)),
+        isDefault: bool(args.is_default),
+        hours: str(args.hours) ?? person.hours,
+        whenToUse: str(args.when_to_use) ?? person.whenToUse,
+        departmentId: dept?.id ?? null,
+      });
+      if (r.error) return { error: r.error };
+      const saved = findPerson(orgId, person.id);
+      return { saved: true, person: saved ? personLine(saved) : person.name, note: reachNote(saved) };
+    }
+    case "remove_person": {
+      const person = findPerson(orgId, str(args.person));
+      if (!person) return { error: `Nobody called ${str(args.person) ?? "that"} is listed. People: ${transferTargets(orgId).map((p) => p.name).join(", ") || "none"}.` };
+      if (args.confirmed !== true) {
+        return { removed: false, note: `Ask the owner to confirm removing ${person.name} first. Agents would stop connecting callers to them and stop informing them.` };
+      }
+      deleteTransfer(orgId, person.id);
+      const left = transferTargets(orgId);
+      return {
+        removed: true,
+        person: person.name,
+        note: left.length
+          ? `People still listed: ${left.map((p) => p.name).join(", ")}.`
+          : "Nobody is listed now, so agents can neither connect a caller to a person nor inform anyone after a call.",
+      };
     }
     case "add_appointment_type": {
       const name = str(args.name);
@@ -163,6 +245,29 @@ async function runTool(
         notes: str(args.notes),
       });
       return { saved: true, appointment_type: name, id: r.id };
+    }
+    case "update_appointment_type": {
+      const type = findAppointmentType(orgId, str(args.appointment_type));
+      if (!type) return { error: `Nothing bookable called ${str(args.appointment_type) ?? "that"}. Types: ${appointmentTypes(orgId).map((a) => a.name).join(", ") || "none"}.` };
+      const name = str(args.name) ?? type.name;
+      upsertAppointmentType(orgId, {
+        id: type.id,
+        name,
+        durationMin: typeof args.duration_min === "number" ? Math.round(args.duration_min) : type.durationMin,
+        hours: str(args.hours) ?? type.hours,
+        location: str(args.location) ?? type.location,
+        notes: str(args.notes) ?? type.notes,
+      });
+      return { saved: true, appointment_type: name, note: "Tell the owner what changed in one line." };
+    }
+    case "remove_appointment_type": {
+      const type = findAppointmentType(orgId, str(args.appointment_type));
+      if (!type) return { error: `Nothing bookable called ${str(args.appointment_type) ?? "that"}. Types: ${appointmentTypes(orgId).map((a) => a.name).join(", ") || "none"}.` };
+      if (args.confirmed !== true) {
+        return { removed: false, note: `Ask the owner to confirm removing "${type.name}" first. Bookings already made are kept; agents stop offering it.` };
+      }
+      deleteAppointmentType(orgId, type.id);
+      return { removed: true, appointment_type: type.name };
     }
     case "add_knowledge": {
       const name = str(args.name);
@@ -183,6 +288,9 @@ async function runTool(
                   .map((a) => {
                     const bits = [`${a.name} (${a.direction}, ${a.intent}): ${a.job}`];
                     if (str(a.persona_name)) bits.push(`introduces itself as ${str(a.persona_name)}`);
+                    if (HUMAN_MODES.includes(a.when_person_needed as HumanMode)) {
+                      bits.push(`when a person is needed: ${HUMAN_MODE_SHORT[a.when_person_needed as HumanMode]} (humanMode ${a.when_person_needed})`);
+                    }
                     if (str(a.voice)) bits.push(`voice ${str(a.voice)}`);
                     return bits.join("; ");
                   })
@@ -217,6 +325,7 @@ async function runTool(
           direction: a.direction,
           introduces_itself_as: a.personaName ?? null,
           voice: a.voice ?? null,
+          when_person_needed: a.humanMode,
           tools: a.tools,
         })),
       };
@@ -231,6 +340,7 @@ async function runTool(
         intent: agent.intent,
         introduces_itself_as: agent.personaName ?? null,
         voice: agent.voice ?? null,
+        when_person_needed: agent.humanMode,
         tools: agent.tools,
         role: agent.prompt ?? "",
         flow_steps: (agent.nodes as { kind: keyof typeof NODE_KIND_LABEL; title: string }[]).map(
@@ -315,6 +425,11 @@ function updateAgentTool(orgId: string, args: Record<string, unknown>): Record<s
     patch.status = status;
     changed.push(`status → ${status}`);
   }
+  const mode = str(args.when_person_needed);
+  if (mode && (HUMAN_MODES as readonly string[]).includes(mode) && mode !== agent.humanMode) {
+    patch.humanMode = mode as HumanMode;
+    changed.push(`when a person is needed → ${HUMAN_MODE_SHORT[patch.humanMode].toLowerCase()}`);
+  }
   const add = Array.isArray(args.add_tools) ? (args.add_tools as unknown[]).map(String) : [];
   const remove = Array.isArray(args.remove_tools) ? (args.remove_tools as unknown[]).map(String) : [];
   if (add.length || remove.length) {
@@ -339,6 +454,64 @@ function updateAgentTool(orgId: string, args: Record<string, unknown>): Record<s
 }
 
 const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+
+/** One person as Swara reads them back: who, and how they are reached. */
+/**
+ * What the workspace already holds, in the words Swara uses. Returned by
+ * get_setup_status, and put in front of her on every typed turn so she
+ * never asks the owner for something that is already on file.
+ */
+export function setupSnapshot(orgId: string): Record<string, unknown> {
+  const s = setupStatus(orgId);
+  const book = publicPlaybook(orgId);
+  return {
+    business: s.playbook.businessType || "not described yet",
+    use_case: String(s.playbook.extra.useCase ?? "not set"),
+    hours: s.playbook.hours,
+    agents_do: {
+      take_complaints: book.features.complaints,
+      book_appointments: book.features.appointments,
+      look_up_orders: book.features.orders,
+      pass_to_people: book.humanEscalation,
+      outbound_calls: book.hasSales,
+    },
+    people: transferTargets(orgId).map(personLine),
+    teams: teams(orgId).map((t) => ({
+      name: t.name,
+      routing_words: t.keywords,
+      shared_inbox: t.email || null,
+    })),
+    appointment_types: appointmentTypes(orgId).map((a) => ({
+      name: a.name,
+      duration_min: a.durationMin,
+      hours: a.hours || null,
+      location: a.location || null,
+    })),
+    knowledge_docs: s.knowledge,
+    agents: listAgents(orgId).map((a) => ({ name: a.name, when_person_needed: a.humanMode })),
+    note:
+      "Teams are optional. With no teams, anything an agent files goes to the default person. An empty people list means agents can neither connect a caller to anyone nor inform anyone.",
+  };
+}
+
+function personLine(p: Person) {
+  const reach = [p.contactCalls ? `calls on ${p.phone}` : "", p.contactEmail ? `email at ${p.email}` : ""].filter(Boolean).join(" and ");
+  return `${p.name} (${p.role}${p.department ? `, ${p.department} team` : ""}) — ${reach || "no way to reach them yet"}${p.isDefault ? "; default contact" : ""}`;
+}
+
+function reachNote(p: Person | undefined) {
+  if (!p) return "Saved.";
+  if (p.contactCalls && p.contactEmail) return `Agents can connect a caller to ${p.name}, and ${p.name} gets a call and an email about things left after a call.`;
+  if (p.contactCalls) return `Agents can connect a caller to ${p.name}, and ${p.name} is called about things left after a call. No email.`;
+  return `${p.name} is told by email after a call. Agents cannot connect a caller to them live — there is no phone ticked.`;
+}
+
+/** undefined = no team asked for; null = asked for one that does not exist. */
+function teamByName(orgId: string, name: string | undefined) {
+  if (!name) return undefined;
+  return findTeam(orgId, name) ?? null;
+}
 const strList = (v: unknown) => (Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : undefined);
 
 function agentIdFor(orgId: string, name: string | undefined) {
@@ -654,10 +827,24 @@ function transferHuman(orgId: string, callId: string | null, args: Record<string
       error: "The owner said there is no human to transfer to. Say that, take a name and callback number, and do not offer a transfer.",
     };
   }
-  const targets = transferTargets(orgId);
+  // This agent's own setting: some agents only note things down and the
+  // person is told after the call.
+  const agentRow = callId
+    ? (getDb()
+        .prepare("SELECT a.human_mode FROM calls c JOIN agents a ON a.id=c.agent_id AND a.org_id=c.org_id WHERE c.id=? AND c.org_id=?")
+        .get(callId, orgId) as { human_mode: string | null } | undefined)
+    : undefined;
+  if (agentRow && !canConnectLive(normaliseHumanMode(agentRow.human_mode))) {
+    return {
+      error:
+        "This agent does not connect callers to a person during the call. Take down what they need (file it with register_complaint if you can) and tell them the right person will be informed and will get back to them.",
+    };
+  }
+  // Only people who ticked Calls can be put on a call.
+  const targets = liveTransferPeople(orgId);
   if (targets.length === 0) {
     return {
-      error: "No transfer desk is configured. Take a callback number and say someone will call them back. Do not invent a person.",
+      error: "Nobody is set up to take calls. Take a callback number and say someone will get back to them. Do not invent a person.",
     };
   }
   const asked = String(args.target_name ?? "").toLowerCase().trim();
@@ -677,6 +864,7 @@ function transferHuman(orgId: string, callId: string | null, args: Record<string
         (t.department && search.includes(t.department.toLowerCase())) ||
         search.includes(t.role.toLowerCase()),
     ) ||
+    targets.find((t) => t.isDefault) ||
     targets[0];
 
   if (callId) {
@@ -693,11 +881,16 @@ function transferHuman(orgId: string, callId: string | null, args: Record<string
     ) ?? (callerPhone ? lookupTickets(orgId, { phone: callerPhone }).find((t) => t.stage !== "resolved") : undefined);
 
     if (openTicket) {
+      // A ticket sitting in the Unassigned queue moves to this person's
+      // team, if they have one; a ticket a team already owns stays put.
       getDb()
         .prepare(
-          "UPDATE complaints SET assignee=?, department_id=COALESCE(department_id, ?) WHERE id=? AND org_id=?",
+          `UPDATE complaints SET assignee=?,
+             department_id=CASE WHEN ? IS NOT NULL AND (department_id IS NULL OR department_id IN
+               (SELECT id FROM departments WHERE org_id=? AND slug='unassigned')) THEN ? ELSE department_id END
+           WHERE id=? AND org_id=?`,
         )
-        .run(target.name, target.departmentId ?? null, openTicket.id, orgId);
+        .run(target.name, target.departmentId ?? null, orgId, target.departmentId ?? null, openTicket.id, orgId);
       updateComplaintStage(orgId, openTicket.id, "escalated");
       addTicketMessage({
         orgId,
@@ -718,7 +911,8 @@ function transferHuman(orgId: string, callId: string | null, args: Record<string
     reason,
     note: `Tell the caller in one short sentence that you are connecting them to ${target.name} (${target.role}), then stop speaking while the call bridges.`,
     // On a phone leg the bridge dials this number and drops out; in the
-    // browser test bench it is shown as a caption.
+    // browser test bench it is shown as a caption. If nobody picks up, the
+    // bridge reports back and the person is informed after the call.
     __control: { kind: "transfer", phone: target.phone, name: target.name },
   };
 }

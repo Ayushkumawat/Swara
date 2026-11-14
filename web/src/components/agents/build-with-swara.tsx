@@ -7,74 +7,142 @@ import { ArrowRight, ArrowRightLeft, Check, Loader2, PhoneIncoming, PhoneOutgoin
 import { Button, IconButton } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
 import { Select } from "@/components/ui/controls";
+import { QuestionCards, type CardQuestion } from "@/components/agents/question-cards";
+import { HUMAN_MODE_OPTIONS, usesLabels } from "@/lib/agents/human-mode";
 import { LIVE_VOICES } from "@/lib/live/config";
 import { IS_MOCK, mutations } from "@/lib/api/client";
 import { INTENT_LABEL, type AgentPlan, type PlannedAgent } from "@/lib/api/schemas";
 import { cn } from "@/lib/utils";
 
 /**
- * The plan review. Swara (the drawer) proposes a set of agents through
- * `propose_agents`; this is where the owner reads it, renames and re-voices
- * each one, answers her open questions, and approves. Nothing is created
- * before approval. The plan comes from the server's planner (Gemini shaping
- * + deterministic flow construction).
+ * Build with Swara — the guided way to get agents.
+ *
+ * Three moves, each on its own screen so none of them is a wall of fields:
+ *   1. the brief — what the business does and why people call, in the
+ *      owner's words;
+ *   2. her questions — one card each, with its own answer box, suggested
+ *      answers to tap, and Skip; answer any, leave the rest;
+ *   3. the plan — read it, rename and re-voice each agent, choose what each
+ *      does when a call needs a person, and approve.
+ *
+ * Nothing is created before approval. The plan comes from the server's
+ * planner (Gemini shaping + deterministic flow construction). When Swara
+ * proposes a plan in the side-pane chat, this opens straight on step 3.
  */
+type Step = "brief" | "planning" | "questions" | "review" | "building" | "done";
+
+const BRIEF_EXAMPLES = [
+  "Dental clinic in Pune. People call to book, reschedule and ask fees. Remind patients the day before. If something needs me, don't transfer — email me after the call.",
+  "D2C brand, about 400 COD orders a day. Calls are where's-my-order, returns and complaints. Angry callers should be put through to our support lead.",
+  "Coaching institute. Admissions enquiries and counselling slots; a counsellor can join the call when a parent is ready to enrol.",
+];
+
 export function BuildWithSwara({
   open,
   onClose,
   onCreated,
   seedPlan,
+  seedBrief = "",
+  onTalk,
 }: {
   open: boolean;
   onClose: () => void;
   onCreated: (ids: string[]) => void;
+  /** A plan Swara already proposed in chat — opens on the review. */
   seedPlan: AgentPlan | null;
+  /** Prefills the brief when opening from scratch. */
+  seedBrief?: string;
+  /** "I'd rather talk it through" — hands over to the side-pane chat. */
+  onTalk?: () => void;
 }) {
-  const [step, setStep] = useState<"planning" | "review" | "building" | "done">("review");
+  const [step, setStep] = useState<Step>("brief");
+  const [brief, setBrief] = useState(seedBrief);
+  // The brief the current plan was made from; answers are added to it, not
+  // to the plan's own (already expanded) copy.
+  const [baseBrief, setBaseBrief] = useState("");
   const [plan, setPlan] = useState<AgentPlan | null>(seedPlan);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  // Her questions get one screen of their own, once. After that they sit
+  // under the plan, where answering them is optional polish.
+  const [asked, setAsked] = useState(false);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [built, setBuilt] = useState<string[]>([]);
   const [builtIds, setBuiltIds] = useState<string[]>([]);
 
-  // Take the new plan on open. A render-phase compare-and-set, not an effect.
+  // Decide where to start each time the popup opens. A render-phase
+  // compare-and-set, not an effect.
   const [seen, setSeen] = useState<{ open: boolean; seed: AgentPlan | null }>({ open: false, seed: null });
   if (open !== seen.open || seedPlan !== seen.seed) {
     setSeen({ open, seed: seedPlan });
     if (open && seedPlan) {
       setPlan(seedPlan);
+      setBaseBrief(seedPlan.brief);
       setSelected(Object.fromEntries(seedPlan.agents.map((a) => [a.key, true])));
       setAnswers({});
+      setAsked(true);
       setBuilt([]);
       setBuiltIds([]);
       setStep("review");
+    } else if (open && !seen.open) {
+      // Opened from scratch. A plan left half-reviewed is still there to
+      // come back to, unless this open brings a new brief.
+      const resume = plan !== null && !seedBrief && (step === "review" || step === "questions");
+      if (!resume) {
+        setPlan(null);
+        setBrief(seedBrief);
+        setBaseBrief("");
+        setAnswers({});
+        setAsked(false);
+        setBuilt([]);
+        setBuiltIds([]);
+        setStep("brief");
+      }
     }
   }
 
   const reset = () => {
+    setPlan(null);
+    setBrief("");
+    setBaseBrief("");
     setAnswers({});
+    setAsked(false);
     setBuilt([]);
     setBuiltIds([]);
-    setStep("review");
+    setStep("brief");
   };
 
-  /** Re-plan from the same brief — after answers, or when the first attempt was poor. */
-  const runPlan = async (extraAnswers?: Record<string, string>) => {
-    const kept = plan;
-    if (!kept) return;
+  /**
+   * Plan, or re-plan. `from` is a new brief (step 1); `more` are answers to
+   * add to the ones already given. A failed attempt leaves whatever plan
+   * was on screen exactly as it was.
+   */
+  const runPlan = async (opts: { from?: string; more?: Record<string, string> } = {}) => {
+    const source = opts.from ?? baseBrief;
+    const all = opts.from !== undefined ? {} : { ...answers, ...(opts.more ?? {}) };
+    const back: Step = plan && opts.from === undefined ? "review" : "brief";
+    if (IS_MOCK) {
+      toast("Demo mode — connect the API and Swara will plan from your brief.");
+      return;
+    }
     setStep("planning");
     try {
-      const next = IS_MOCK
-        ? kept
-        : await mutations.planAgents({ brief: kept.brief, answers: extraAnswers ?? answers });
+      const next = await mutations.planAgents({ brief: source, answers: all });
+      setBaseBrief(source);
+      setAnswers(all);
       setPlan(next);
       setSelected(Object.fromEntries(next.agents.map((a) => [a.key, true])));
-      setStep("review");
+      // Her questions get a screen of their own once, straight after a new
+      // brief. Any later re-plan lands on the plan, with whatever she would
+      // still ask listed under it.
+      const stillOpen = next.questions.filter((q) => !(q in all));
+      const fresh = opts.from !== undefined;
+      setAsked(!fresh || stillOpen.length === 0);
+      setStep(fresh && stillOpen.length ? "questions" : "review");
     } catch (error) {
-      toast.error("Planning failed — nothing was replaced", {
-        description: `Your current plan is still here. ${errorText(error)}`,
+      toast.error(plan && opts.from === undefined ? "Planning failed — nothing was replaced" : "Swara could not draft a plan", {
+        description: `${plan && opts.from === undefined ? "Your current plan is still here. " : ""}${errorText(error)}`,
       });
-      setStep("review");
+      setStep(back);
     }
   };
 
@@ -108,12 +176,19 @@ export function BuildWithSwara({
       setBuiltIds(res.created.map((c) => c.id));
       setStep("done");
     } catch (error) {
-      toast.error("Could not create agents", { description: error instanceof Error ? error.message : undefined });
+      toast.error("Could not create agents", { description: errorText(error) });
       setStep("review");
     }
   };
 
   const chosenCount = plan ? plan.agents.filter((a) => selected[a.key]).length : 0;
+  const openQuestions: CardQuestion[] = plan
+    ? plan.questions
+        .filter((q) => !(q in answers))
+        .map((q) => ({ question: q, suggestions: plan.questionOptions?.[q] ?? [] }))
+    : [];
+  const briefReady = brief.trim().length >= 12;
+  const guided = step === "brief" || step === "questions" || (step === "planning" && !asked);
 
   return (
     <AnimatePresence>
@@ -133,33 +208,117 @@ export function BuildWithSwara({
             transition={{ type: "spring", stiffness: 320, damping: 30 }}
             className="glass-strong fixed left-1/2 top-1/2 z-[90] flex max-h-[90vh] w-[min(920px,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[22px] border border-hairline"
             role="dialog"
-            aria-label="Swara's plan"
+            aria-label={guided ? "Build with Swara" : "Swara's plan"}
           >
             <header className="flex items-start justify-between gap-3 border-b border-hairline p-4">
               <div className="flex items-center gap-3">
                 <SwaraOrb active={step === "planning" || step === "building"} />
                 <div>
                   <div className="font-[family-name:var(--font-display)] text-[15px] font-semibold text-t1">
-                    Swara&apos;s plan
+                    {guided ? "Build with Swara" : "Swara\u2019s plan"}
                   </div>
                   <p className="mt-0.5 text-[11.5px] text-t3">
+                    {step === "brief" && "Tell her what your agents should handle. She asks about anything that is missing."}
                     {step === "planning" && "Reading your workspace, deciding which agents you need…"}
+                    {step === "questions" && "A first draft is ready. Answer what you like — each answer sharpens it."}
                     {step === "review" && "Review the plan. Nothing is created until you approve."}
                     {step === "building" && "Creating agents and wiring their flows…"}
                     {step === "done" && "Done. Each agent has a flow you can open, test and publish."}
                   </p>
                 </div>
               </div>
-              <IconButton onClick={onClose} aria-label="Close">
-                <X className="size-4" />
-              </IconButton>
+              <div className="flex items-center gap-3">
+                <StepDots step={step} />
+                <IconButton onClick={onClose} aria-label="Close">
+                  <X className="size-4" />
+                </IconButton>
+              </div>
             </header>
 
             <div className="flex-1 overflow-y-auto p-5">
               <AnimatePresence mode="wait">
+                {step === "brief" ? (
+                  <motion.div key="brief" {...fade} className="space-y-3.5">
+                    <label className="block">
+                      <span className="mb-1.5 block text-[12.5px] font-medium text-t1">What does your business do, and why do people call?</span>
+                      <textarea
+                        value={brief}
+                        onChange={(e) => setBrief(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && briefReady) {
+                            e.preventDefault();
+                            void runPlan({ from: brief.trim() });
+                          }
+                        }}
+                        rows={6}
+                        autoFocus
+                        placeholder="A few sentences, the way you'd explain it to a new receptionist."
+                        className="glass w-full resize-y rounded-[14px] p-3.5 text-[13px] leading-relaxed text-t1 outline-none placeholder:text-t3 focus:border-cyan/45"
+                      />
+                    </label>
+                    <div className="rounded-[14px] border border-hairline bg-white/[0.02] p-3.5">
+                      <div className="mb-2 text-[11px] uppercase tracking-[0.07em] text-t3">Worth mentioning</div>
+                      <ul className="grid gap-x-6 gap-y-1 text-[12px] leading-relaxed text-t2 sm:grid-cols-2">
+                        <li>· The three or four reasons people call</li>
+                        <li>· Who a call should reach, if anyone</li>
+                        <li>· Should that person join the call, or be told after it?</li>
+                        <li>· Anything you also call customers about</li>
+                      </ul>
+                    </div>
+                    <div>
+                      <div className="mb-1.5 text-[11px] text-t3">Or start from an example and edit it</div>
+                      <div className="flex flex-col gap-1.5">
+                        {BRIEF_EXAMPLES.map((ex) => (
+                          <button
+                            key={ex}
+                            type="button"
+                            onClick={() => setBrief(ex)}
+                            className="rounded-[11px] border border-hairline bg-white/[0.03] px-3 py-2 text-left text-[11.5px] leading-relaxed text-t2 transition-colors hover:border-cyan/30 hover:text-t1"
+                          >
+                            {ex}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : null}
+
                 {step === "planning" ? (
                   <motion.div key="planning" {...fade}>
                     <Thinking />
+                  </motion.div>
+                ) : null}
+
+                {step === "questions" && plan ? (
+                  <motion.div key="questions" {...fade} className="space-y-4">
+                    <div className="glass rounded-[16px] p-4">
+                      <div className="flex items-start gap-3">
+                        <Sparkles className="mt-0.5 size-4 shrink-0 text-cyan" />
+                        <div className="min-w-0">
+                          <p className="text-[13px] leading-relaxed text-t1">{plan.summary}</p>
+                          <p className="mt-1 text-[11px] text-t3">
+                            First draft: {plan.agents.map((a) => a.name).join(" · ")}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-[12.5px] font-medium text-t1">
+                      {openQuestions.length === 1 ? "One thing Swara would like to know" : `${openQuestions.length} things Swara would like to know`}
+                    </div>
+                    <QuestionCards
+                      key={plan.questions.join("|")}
+                      questions={openQuestions}
+                      submitLabel="Update the plan"
+                      skipAllLabel="Skip — show me the plan"
+                      onSubmit={(a) => {
+                        setAsked(true);
+                        void runPlan({ more: a });
+                      }}
+                      onSkipAll={() => {
+                        setAsked(true);
+                        setStep("review");
+                      }}
+                    />
                   </motion.div>
                 ) : null}
 
@@ -173,10 +332,23 @@ export function BuildWithSwara({
                           <p className="mt-1 text-[11px] text-t3">
                             {plan.source === "gemini" ? "Designed by Swara" : "Designed from your playbook (no model key)"} ·{" "}
                             {plan.agents.length} agents · {plan.agents.reduce((n, a) => n + a.nodes.length, 0)} steps
+                            {Object.keys(answers).length ? ` · ${Object.keys(answers).length} of your answers used` : ""}
                           </p>
-                          <Button size="sm" variant="subtle" className="mt-2" onClick={() => void runPlan()}>
-                            Retry plan
-                          </Button>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <Button size="sm" variant="subtle" onClick={() => void runPlan()}>
+                              Retry plan
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="subtle"
+                              onClick={() => {
+                                setBrief(baseBrief);
+                                setStep("brief");
+                              }}
+                            >
+                              Edit the brief
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -212,30 +384,18 @@ export function BuildWithSwara({
                       ))}
                     </div>
 
-                    {plan.questions.length ? (
+                    {openQuestions.length ? (
                       <div className="glass rounded-[16px] p-4">
-                        <div className="mb-2 text-[12.5px] font-medium text-t1">Swara would still ask</div>
-                        <div className="space-y-3">
-                          {plan.questions.map((q) => (
-                            <div key={q}>
-                              <div className="mb-1 text-[12px] text-t2">{q}</div>
-                              <input
-                                value={answers[q] ?? ""}
-                                onChange={(e) => setAnswers((s) => ({ ...s, [q]: e.target.value }))}
-                                placeholder="Answer, or leave blank"
-                                className="glass w-full rounded-[11px] px-3 py-2 text-[12.5px] text-t1 outline-none"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                        <Button
-                          size="sm"
-                          className="mt-3"
-                          onClick={() => void runPlan(answers)}
-                          disabled={!Object.values(answers).some((v) => v.trim())}
-                        >
-                          Re-plan with answers
-                        </Button>
+                        <div className="mb-1 text-[12.5px] font-medium text-t1">Swara would still ask</div>
+                        <p className="mb-3 text-[11.5px] text-t3">
+                          Optional. Answer any of these and she redrafts the plan with it; skip them and build as it is.
+                        </p>
+                        <QuestionCards
+                          key={plan.questions.join("|")}
+                          questions={openQuestions}
+                          submitLabel="Re-plan with answers"
+                          onSubmit={(a) => void runPlan({ more: a })}
+                        />
                       </div>
                     ) : null}
                   </motion.div>
@@ -292,7 +452,8 @@ export function BuildWithSwara({
                     </div>
                     <p className="mx-auto mt-2 max-w-md text-[12.5px] leading-relaxed text-t3">
                       Open each one, run a test call, then publish. Handoffs between them already work — a caller who
-                      reaches the wrong agent gets passed along with a summary.
+                      reaches the wrong agent gets passed along with a summary. To change one later, open it and tell
+                      Swara what to change.
                     </p>
                   </motion.div>
                 ) : null}
@@ -300,10 +461,26 @@ export function BuildWithSwara({
             </div>
 
             <footer className="flex items-center justify-between gap-3 border-t border-hairline p-3.5">
-              <div className="text-[11.5px] text-t3">
+              <div className="min-w-0 text-[11.5px] text-t3">
+                {step === "brief" && onTalk ? (
+                  <button type="button" onClick={onTalk} className="text-t2 underline-offset-2 transition-colors hover:text-t1 hover:underline">
+                    Rather talk it through? Chat with Swara instead
+                  </button>
+                ) : null}
                 {step === "review" && plan ? `${chosenCount} of ${plan.agents.length} selected` : ""}
               </div>
               <div className="flex gap-2">
+                {step === "brief" ? (
+                  <>
+                    <Button variant="subtle" onClick={() => void runPlan({ from: "" })} title="Plan from the business details, people and bookable types already in Workspace setup">
+                      Use what&apos;s already set up
+                    </Button>
+                    <Button variant="primary" onClick={() => void runPlan({ from: brief.trim() })} disabled={!briefReady}>
+                      Plan my agents
+                      <ArrowRight className="size-3.5" />
+                    </Button>
+                  </>
+                ) : null}
                 {step === "review" ? (
                   <>
                     <Button variant="subtle" onClick={onClose}>
@@ -335,6 +512,22 @@ export function BuildWithSwara({
   );
 }
 
+/** Where the owner is in the three moves. */
+function StepDots({ step }: { step: Step }) {
+  const at = step === "brief" ? 0 : step === "questions" ? 1 : step === "planning" ? -1 : 2;
+  if (at < 0) return null;
+  return (
+    <div className="hidden items-center gap-1.5 text-[10.5px] text-t3 sm:flex" aria-hidden>
+      {["Brief", "Questions", "Plan"].map((label, i) => (
+        <span key={label} className="flex items-center gap-1.5">
+          {i ? <span className="h-px w-3 bg-hairline" /> : null}
+          <span className={cn("rounded-full px-2 py-0.5", i === at ? "bg-white/[0.09] text-t1" : i < at ? "text-t2" : "")}>{label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 const fade = {
   initial: { opacity: 0, y: 6 },
   animate: { opacity: 1, y: 0 },
@@ -355,7 +548,7 @@ function PlannedAgentCard({
   plan: AgentPlan;
   checked: boolean;
   onToggle: () => void;
-  onChange: (patch: Partial<Pick<PlannedAgent, "personaName" | "voice">>) => void;
+  onChange: (patch: Partial<Pick<PlannedAgent, "personaName" | "voice" | "humanMode">>) => void;
 }) {
   const handoffNames = useMemo(
     () => agent.handsOffTo.map((k) => plan.agents.find((a) => a.key === k)?.name ?? k),
@@ -403,6 +596,15 @@ function PlannedAgentCard({
           <span className="mb-1 block text-[10.5px] uppercase tracking-wide text-t3">Voice</span>
           <Select size="sm" value={agent.voice} onChange={(v) => onChange({ voice: v })} options={voiceOptions} />
         </label>
+        <label className="block sm:col-span-2">
+          <span className="mb-1 block text-[10.5px] uppercase tracking-wide text-t3">When a call needs a person</span>
+          <Select
+            size="sm"
+            value={agent.humanMode}
+            onChange={(v) => onChange({ humanMode: v })}
+            options={HUMAN_MODE_OPTIONS}
+          />
+        </label>
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
         <Pill tone="violet">{INTENT_LABEL[agent.intent]}</Pill>
@@ -410,9 +612,9 @@ function PlannedAgentCard({
           <Dir className="size-3" /> {agent.direction}
         </Pill>
         <Pill>{agent.nodes.length} steps</Pill>
-        {agent.needs.map((n) => (
+        {usesLabels(agent.needs).map((n) => (
           <Pill key={n} tone="amber">
-            needs {n}
+            uses {n}
           </Pill>
         ))}
       </div>
@@ -427,10 +629,10 @@ function PlannedAgentCard({
 }
 
 const THOUGHTS = [
-  "Reading the playbook and departments",
+  "Reading what your workspace already has",
   "Listing why people call",
   "Separating angry-caller work from sales",
-  "Checking who can take a transfer",
+  "Checking who a call can reach, and how",
   "Deciding which agents hand off to which",
   "Laying out each flow",
 ];

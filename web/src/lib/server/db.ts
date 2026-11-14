@@ -581,6 +581,24 @@ function migrateColumns(database: Database.Database) {
   addColumn(database, "agents", "tools", "TEXT");
   addColumn(database, "agents", "persona_name", "TEXT");
   database.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub)");
+
+  // People: how each one wants to be reached (calls, email, or both), and
+  // which one gets whatever no team owns. Anyone already listed was a
+  // transfer desk, so calls stay on; an email on file keeps working too.
+  addColumn(database, "transfer_targets", "contact_calls", "INTEGER NOT NULL DEFAULT 1");
+  if (!hasColumn(database, "transfer_targets", "contact_email")) {
+    addColumn(database, "transfer_targets", "contact_email", "INTEGER NOT NULL DEFAULT 0");
+    database.exec("UPDATE transfer_targets SET contact_email=1 WHERE email IS NOT NULL AND trim(email)!=''");
+  }
+  addColumn(database, "transfer_targets", "is_default", "INTEGER NOT NULL DEFAULT 0");
+
+  // Agents: what to do when a person is needed — connect live, inform after
+  // the call, both, or never. Agents that existed before this setting keep
+  // exactly what they did (live transfer, nothing sent after the call).
+  if (!hasColumn(database, "agents", "human_mode")) {
+    addColumn(database, "agents", "human_mode", "TEXT");
+    database.exec("UPDATE agents SET human_mode='live'");
+  }
 }
 
 let db: Database.Database | null = null;

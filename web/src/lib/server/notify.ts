@@ -8,6 +8,14 @@ import "server-only";
 
 type Channel = "email" | "whatsapp" | "sms" | "call";
 
+/**
+ * `ok` means nothing went wrong; `delivered` means the message actually left
+ * the building. They differ when a provider is not configured: the message is
+ * kept on the ticket (ok) but nobody received it (not delivered) — callers
+ * must not tell an owner "informed" on `ok` alone.
+ */
+export type NotifyResult = { ok: boolean; delivered: boolean; error?: string };
+
 export async function notifyStakeholder(params: {
   orgId: string;
   channel: Channel;
@@ -17,22 +25,22 @@ export async function notifyStakeholder(params: {
   ticketRef: string;
   callId?: string | null;
   agentHint?: string;
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<NotifyResult> {
   try {
     if (params.channel === "email") return sendEmail(params.to, params.subject, params.body);
     if (params.channel === "call") return placeBriefingCall(params);
     return sendPlivoMessage(params.channel, params.to, params.body);
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : "notify failed" };
+    return { ok: false, delivered: false, error: error instanceof Error ? error.message : "notify failed" };
   }
 }
 
-async function sendEmail(to: string, subject: string, body: string) {
+async function sendEmail(to: string, subject: string, body: string): Promise<NotifyResult> {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.NOTIFY_FROM_EMAIL;
   if (!key || !from) {
     console.warn("[notify] email queued on platform only — set RESEND_API_KEY and NOTIFY_FROM_EMAIL to deliver");
-    return { ok: true, error: "Logged on the ticket. Configure RESEND_API_KEY to send the email." };
+    return { ok: true, delivered: false, error: "Logged on the ticket. Configure RESEND_API_KEY to send the email." };
   }
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -40,11 +48,11 @@ async function sendEmail(to: string, subject: string, body: string) {
     body: JSON.stringify({ from, to, subject, text: body }),
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) return { ok: false, error: `Email provider ${res.status}` };
-  return { ok: true };
+  if (!res.ok) return { ok: false, delivered: false, error: `Email provider ${res.status}` };
+  return { ok: true, delivered: true };
 }
 
-async function sendPlivoMessage(channel: "whatsapp" | "sms", to: string, text: string) {
+async function sendPlivoMessage(channel: "whatsapp" | "sms", to: string, text: string): Promise<NotifyResult> {
   const authId = process.env.PLIVO_AUTH_ID;
   const authToken = process.env.PLIVO_AUTH_TOKEN;
   const src =
@@ -67,13 +75,13 @@ async function sendPlivoMessage(channel: "whatsapp" | "sms", to: string, text: s
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return { ok: false, error: `Plivo message ${res.status}` };
-    return { ok: true };
+    if (!res.ok) return { ok: false, delivered: false, error: `Plivo message ${res.status}` };
+    return { ok: true, delivered: true };
   }
 
   const bridge = process.env.TELEPHONY_BRIDGE_URL;
   if (!bridge) {
-    return { ok: true, error: "Logged on the ticket. Set Plivo keys or TELEPHONY_BRIDGE_URL to deliver." };
+    return { ok: true, delivered: false, error: "Logged on the ticket. Set Plivo keys or TELEPHONY_BRIDGE_URL to deliver." };
   }
   const res = await fetch(`${bridge.replace(/\/$/, "")}/notify`, {
     method: "POST",
@@ -84,8 +92,8 @@ async function sendPlivoMessage(channel: "whatsapp" | "sms", to: string, text: s
     body: JSON.stringify({ channel, to, text }),
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) return { ok: false, error: `Bridge notify ${res.status}` };
-  return { ok: true };
+  if (!res.ok) return { ok: false, delivered: false, error: `Bridge notify ${res.status}` };
+  return { ok: true, delivered: true };
 }
 
 async function placeBriefingCall(params: {
@@ -93,12 +101,12 @@ async function placeBriefingCall(params: {
   to: string;
   ticketRef: string;
   agentHint?: string;
-}) {
+}): Promise<NotifyResult> {
   const bridge = process.env.TELEPHONY_BRIDGE_URL;
-  if (!bridge) return { ok: false, error: "TELEPHONY_BRIDGE_URL is not set; cannot call the desk." };
+  if (!bridge) return { ok: false, delivered: false, error: "TELEPHONY_BRIDGE_URL is not set; cannot place the call." };
   const { firstLiveAgent } = await import("./repo");
   const agentId = firstLiveAgent(params.orgId);
-  if (!agentId) return { ok: false, error: "No live agent to place the briefing call." };
+  if (!agentId) return { ok: false, delivered: false, error: "No live agent to place the briefing call." };
   const res = await fetch(`${bridge.replace(/\/$/, "")}/dial`, {
     method: "POST",
     headers: {
@@ -115,7 +123,7 @@ async function placeBriefingCall(params: {
   });
   if (!res.ok) {
     const payload = (await res.json().catch(() => ({}))) as { error?: string };
-    return { ok: false, error: payload.error ?? `Bridge ${res.status}` };
+    return { ok: false, delivered: false, error: payload.error ?? `Bridge ${res.status}` };
   }
-  return { ok: true };
+  return { ok: true, delivered: true };
 }

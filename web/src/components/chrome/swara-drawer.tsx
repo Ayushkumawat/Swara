@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Wand2 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
@@ -8,17 +9,19 @@ import { toast } from "sonner";
 import { RotateCcw, Sparkles, X } from "lucide-react";
 import { useUi } from "@/lib/ui-store";
 import { qk } from "@/lib/api/hooks";
-import type { AgentPlan } from "@/lib/api/schemas";
 import { BuildWithSwara, SwaraOrb } from "@/components/agents/build-with-swara";
 import { SwaraChat, resetSwaraThread } from "@/components/agents/swara-chat";
 import { cn } from "@/lib/utils";
 
 /**
- * Swara, everywhere. One drawer (⌘J, the sparkle in the top bar, the Swara
- * button on Agents and Setup) for everything she does: set the workspace up,
- * design agents from a brief, and change agents that already exist. When
- * she proposes a plan, the review modal opens on top; approving it creates
- * the agents and lands the owner on them.
+ * Swara, everywhere, in two sizes.
+ *
+ * The side pane (⌘J, the sparkle in the top bar, the Swara button on Agents
+ * and Setup) is for talking: set the workspace up, change an agent, ask what
+ * one does. The large "Build with Swara" popup is for making agents: a
+ * brief, her questions as cards, then the plan to approve. Both are mounted
+ * here so either can be opened from any screen, and a plan she proposes in
+ * the pane opens the popup on its review step.
  */
 export function SwaraDrawer() {
   const open = useUi((s) => s.swaraOpen);
@@ -30,8 +33,12 @@ export function SwaraDrawer() {
   const qc = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
-  const [plan, setPlan] = useState<AgentPlan | null>(null);
-  const [reviewing, setReviewing] = useState(false);
+  const buildOpen = useUi((s) => s.buildOpen);
+  const buildBrief = useUi((s) => s.buildBrief);
+  const buildPlan = useUi((s) => s.buildPlan);
+  const openBuild = useUi((s) => s.openBuild);
+  const closeBuild = useUi((s) => s.closeBuild);
+  const openSwara = useUi((s) => s.openSwara);
 
   // Read the seed once per open so typing over it does not get reset.
   const [seedForThisOpen, setSeedForThisOpen] = useState("");
@@ -96,6 +103,18 @@ export function SwaraDrawer() {
                     {context.agentName ? `Looking at ${context.agentName} — tell her what to change` : "Sets up, builds and edits your agents"}
                   </div>
                 </div>
+                {!context.agentName ? (
+                  <button
+                    onClick={() => {
+                      setSwara(false);
+                      openBuild();
+                    }}
+                    title="Open the guided builder: brief, her questions, then the plan"
+                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-white/[0.04] px-2.5 py-1 text-[11px] text-t2 transition-colors hover:border-cyan/30 hover:text-t1"
+                  >
+                    <Wand2 className="size-3" /> Guided build
+                  </button>
+                ) : null}
                 <button
                   onClick={() => {
                     resetSwaraThread();
@@ -119,10 +138,7 @@ export function SwaraDrawer() {
                   context={{ ...context, page: pathname.replace(/^\//, "") || undefined }}
                   suggestions={suggestions}
                   onSaved={refresh}
-                  onPlan={(p) => {
-                    setPlan(p);
-                    setReviewing(true);
-                  }}
+                  onPlan={(p) => openBuild({ plan: p })}
                 />
                 <p className="mt-2 text-center text-[10.5px] text-t3">
                   Every change she makes is a version you can roll back. <kbd className="rounded border border-hairline px-1 font-[family-name:var(--font-mono)]">⌘J</kbd> opens her anywhere.
@@ -134,12 +150,16 @@ export function SwaraDrawer() {
       </AnimatePresence>
 
       <BuildWithSwara
-        open={reviewing && plan !== null}
-        seedPlan={plan}
-        onClose={() => setReviewing(false)}
+        open={buildOpen}
+        seedPlan={buildPlan}
+        seedBrief={buildBrief}
+        onClose={closeBuild}
+        onTalk={() => {
+          closeBuild();
+          openSwara("", {});
+        }}
         onCreated={(ids) => {
-          setReviewing(false);
-          setPlan(null);
+          closeBuild();
           refresh();
           if (ids[0]) setPendingAgentSelect(ids[0]);
           setSwara(false);

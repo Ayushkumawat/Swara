@@ -22,7 +22,7 @@ export type NodeConfig = {
   tool?: string;
   /** book: which appointment type. */
   appointmentType?: string;
-  /** escalate: which transfer desk (by name). Empty = the best match. */
+  /** escalate: which person to connect to (by name). Empty = the best match. */
   transferTarget?: string;
   /** handoff: which other agent (id) takes over. */
   agentId?: string;
@@ -53,7 +53,7 @@ export const NODE_KIND_HELP: Record<FlowNodeKind, string> = {
   say: "A fixed line the agent must deliver at this point.",
   collect: "Ask for these details one at a time and read them back.",
   book: "Confirm a slot with book_slot. Only configured types are allowed.",
-  escalate: "Warm transfer to a configured human desk via transfer_to_human.",
+  escalate: "Connect the caller to a person who takes calls, via transfer_to_human.",
   handoff: "Pass the caller to another agent that owns this topic, with context.",
   end: "Close warmly, then hang up with end_call.",
 };
@@ -82,7 +82,18 @@ export type FlowIssue = { level: "error" | "warn"; nodeId?: string; message: str
 export function validateFlow(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  ctx: { transfers: string[]; appointmentTypes: string[]; agents: { id: string; name: string }[] },
+  ctx: {
+    /** Names of the people who take calls. */
+    transfers: string[];
+    appointmentTypes: string[];
+    agents: { id: string; name: string }[];
+    /**
+     * False when this agent is set to inform a person after the call (or to
+     * handle it alone): a Transfer step then takes the caller's details
+     * instead of connecting them, so an empty people list is not an error.
+     */
+    liveTransfer?: boolean;
+  },
 ): FlowIssue[] {
   const issues: FlowIssue[] = [];
   const starts = nodes.filter((n) => n.kind === "start");
@@ -113,11 +124,16 @@ export function validateFlow(
     if (n.kind !== "end" && n.kind !== "handoff" && n.kind !== "escalate" && outgoing(edges, n.id).length === 0) {
       issues.push({ level: "warn", nodeId: n.id, message: `"${n.title}" has no next step — the call will drift.` });
     }
-    if (n.kind === "escalate" && ctx.transfers.length === 0) {
-      issues.push({ level: "error", nodeId: n.id, message: "Transfer step, but no transfer desk is configured in Workspace setup." });
-    }
-    if (n.kind === "escalate" && cfg.transferTarget && !ctx.transfers.includes(cfg.transferTarget)) {
-      issues.push({ level: "warn", nodeId: n.id, message: `Desk "${cfg.transferTarget}" no longer exists.` });
+    if (n.kind === "escalate" && ctx.liveTransfer === false) {
+      issues.push({
+        level: "warn",
+        nodeId: n.id,
+        message: `"${n.title}" will take the caller's details instead of connecting them — this agent is not set to connect callers live (Agent role → When a call needs a person).`,
+      });
+    } else if (n.kind === "escalate" && ctx.transfers.length === 0) {
+      issues.push({ level: "error", nodeId: n.id, message: "Transfer step, but nobody in Workspace setup takes calls. Add a person and tick Calls, or set this agent to inform a person after the call." });
+    } else if (n.kind === "escalate" && cfg.transferTarget && !ctx.transfers.includes(cfg.transferTarget)) {
+      issues.push({ level: "warn", nodeId: n.id, message: `"${cfg.transferTarget}" is no longer listed, or no longer takes calls.` });
     }
     if (n.kind === "book" && ctx.appointmentTypes.length === 0) {
       issues.push({ level: "error", nodeId: n.id, message: "Booking step, but no appointment types are configured." });
@@ -149,11 +165,21 @@ export function validateFlow(
 export function compileFlow(
   nodes: FlowNode[],
   edges: FlowEdge[],
-  ctx: { agents: { id: string; name: string }[]; allowTransfer?: boolean; concise?: boolean },
+  ctx: {
+    agents: { id: string; name: string }[];
+    allowTransfer?: boolean;
+    /** No live transfer, but the right person is told when the call ends. */
+    informAfter?: boolean;
+    concise?: boolean;
+  },
 ): string {
   if (nodes.length === 0) return "";
   const start = nodes.find((n) => n.kind === "start") ?? nodes[0];
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  // What a transfer step means on a call where nobody can be connected.
+  const noTransfer = ctx.informAfter
+    ? "you cannot connect them to a person on this call — take down what they need and tell them the right person will be informed and will get back to them"
+    : "no human is available for live transfer — let them know warmly and take a callback";
 
   const order: FlowNode[] = [];
   const seen = new Set<string>();
@@ -189,6 +215,9 @@ export function compileFlow(
         hints.push(`- Booking type: "${cfg.appointmentType}".${cfg.note ? ` ${cfg.note}` : ""}`);
       } else if (n.kind === "escalate" && ctx.allowTransfer !== false && cfg.transferTarget) {
         hints.push(`- Human transfer desk for "${n.title}": ${cfg.transferTarget}.${cfg.note ? ` ${cfg.note}` : ""}`);
+      } else if (n.kind === "escalate" && ctx.allowTransfer === false) {
+        // The branch hints above may still point at this step by its title.
+        hints.push(`- "${n.title}": ${noTransfer}.`);
       } else if (n.kind === "handoff") {
         const target = ctx.agents.find((a) => a.id === cfg.agentId);
         if (target) hints.push(`- Hand off to ${target.name} when the caller needs ${n.title.replace(/^Hand off\s*→?\s*/i, "")}.`);
@@ -251,7 +280,7 @@ export function compileFlow(
         break;
       case "escalate":
         if (ctx.allowTransfer === false) {
-          lines.push(`${head}: no human is available for live transfer — let them know warmly and take a callback.${note}`);
+          lines.push(`${head}: ${noTransfer}.${note}`);
           break;
         }
         lines.push(`${head}: let the caller know you are connecting them${cfg.transferTarget ? ` to ${cfg.transferTarget}` : " to a colleague"} and transfer the call.${note}`);

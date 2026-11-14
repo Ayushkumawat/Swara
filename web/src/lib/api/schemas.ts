@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HUMAN_MODES } from "@/lib/agents/human-mode";
 
 /**
  * The wire contract between this console and the Swara backend.
@@ -124,6 +125,9 @@ export const FlowEdgeSchema = z.object({
 });
 export type FlowEdge = z.infer<typeof FlowEdgeSchema>;
 
+/** connect live / inform after the call / both / never — see lib/agents/human-mode. */
+export const HumanModeSchema = z.enum(HUMAN_MODES);
+
 export const AgentSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -136,6 +140,8 @@ export const AgentSchema = z.object({
   voice: z.string().optional(),
   /** The name the agent introduces itself with on a call. */
   personaName: z.string().optional(),
+  /** What the agent does when a call needs a person. */
+  humanMode: HumanModeSchema.default("both"),
   mode: z.enum(["graph", "prompt"]),
   prompt: z.string().optional(),
   tools: z.array(z.string()).optional(),
@@ -295,6 +301,8 @@ export const DepartmentSchema = z.object({
   slug: z.string(),
   name: z.string(),
   openActions: z.number(),
+  /** True for the Unassigned queue — holds work no team owns; not a team. */
+  system: z.boolean().default(false),
   keywords: z.array(z.string()).optional(),
   email: z.string().optional(),
   phone: z.string().optional(),
@@ -417,6 +425,12 @@ export const TransferTargetSchema = z.object({
   email: z.string().optional(),
   whatsapp: z.string().optional(),
   priority: z.number(),
+  /** Ticked "Calls": can be connected live, and called after a call. */
+  contactCalls: z.boolean().default(true),
+  /** Ticked "Email": gets the details by email. */
+  contactEmail: z.boolean().default(false),
+  /** Gets whatever no team owns. */
+  isDefault: z.boolean().default(false),
 });
 export type TransferTarget = z.infer<typeof TransferTargetSchema>;
 
@@ -454,6 +468,14 @@ export const PlaybookSchema = z.object({
   useCase: UseCaseSchema.default("other"),
   hasSales: z.boolean().default(false),
   humanEscalation: z.boolean().default(true),
+  /** Optional parts of the product this business has switched on. */
+  features: z
+    .object({
+      complaints: z.boolean().default(true),
+      appointments: z.boolean().default(true),
+      orders: z.boolean().default(true),
+    })
+    .default({ complaints: true, appointments: true, orders: true }),
 });
 export type Playbook = z.infer<typeof PlaybookSchema>;
 
@@ -490,6 +512,8 @@ export const PlannedAgentSchema = z.object({
   personaName: z.string().default(""),
   /** Live API voice name ("Orus", "Kore"…). */
   voice: z.string().default(""),
+  /** What this agent does when a call needs a person. */
+  humanMode: HumanModeSchema.default("both"),
 });
 export type PlannedAgent = z.infer<typeof PlannedAgentSchema>;
 
@@ -498,6 +522,8 @@ export const AgentPlanSchema = z.object({
   summary: z.string(),
   /** Things Swara still wants to know before building. Empty = ready. */
   questions: z.array(z.string()).default([]),
+  /** Tappable suggested answers, keyed by the question text. */
+  questionOptions: z.record(z.string(), z.array(z.string())).default({}),
   /** Setup gaps the plan depends on (e.g. "no transfer desk"). */
   gaps: z.array(z.string()).default([]),
   agents: z.array(PlannedAgentSchema),
@@ -509,8 +535,17 @@ export const SwaraChatMessageSchema = z.object({
   role: z.enum(["user", "model"]),
   text: z.string(),
 });
+/** One question Swara puts on screen as a card with its own answer box. */
+export const SwaraQuestionSchema = z.object({
+  question: z.string(),
+  suggestions: z.array(z.string()).default([]),
+});
+export type SwaraQuestion = z.infer<typeof SwaraQuestionSchema>;
+
 export const SwaraChatResponseSchema = z.object({
   reply: z.string(),
+  /** Questions to show as cards under the reply. Empty when she asked none. */
+  questions: z.array(SwaraQuestionSchema).default([]),
   tools: z.array(z.object({ name: z.string(), result: z.record(z.string(), z.unknown()) })),
   plan: AgentPlanSchema.nullable(),
   model: z.string(),

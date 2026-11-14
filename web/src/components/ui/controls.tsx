@@ -103,6 +103,46 @@ export function Toggle({
   );
 }
 
+/** A tick box with its label, for choices that are not on/off settings —
+ *  "reach this person by: [x] Calls  [ ] Email". */
+export function Checkbox({
+  checked,
+  onChange,
+  label,
+  hint,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn("group flex items-start gap-2.5 text-left outline-none", disabled && "cursor-not-allowed opacity-40")}
+    >
+      <span
+        className={cn(
+          "mt-px flex size-[18px] shrink-0 items-center justify-center rounded-[6px] border transition-colors group-focus-visible:border-cyan/60",
+          checked ? "border-cyan bg-cyan/20" : "border-hairline bg-white/[0.04] group-hover:border-white/25",
+        )}
+      >
+        {checked ? <Check className="size-3 text-cyan" strokeWidth={3} /> : null}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[12.5px] font-medium text-t1">{label}</span>
+        {hint ? <span className="mt-0.5 block text-[10.5px] leading-snug text-t3">{hint}</span> : null}
+      </span>
+    </button>
+  );
+}
+
 export function Slider({
   value,
   onChange,
