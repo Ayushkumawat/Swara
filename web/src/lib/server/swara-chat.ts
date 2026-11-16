@@ -3,7 +3,7 @@ import { GoogleGenAI, Type, type Content, type Part } from "@google/genai";
 import { AgentPlanSchema, type AgentPlan, type SwaraQuestion } from "@/lib/api/schemas";
 import { SWARA_SYSTEM_PROMPT, SWARA_TOOL_RULES } from "@/lib/agents/swara";
 import { ASK_OWNER_DECLARATION, SETUP_TOOL_DECLARATIONS } from "@/lib/live/config";
-import { TEXT_MODELS } from "./models";
+import { geminiKeyError, TEXT_MODELS } from "./models";
 import { executeTool, setupSnapshot } from "./tools";
 
 /**
@@ -55,6 +55,8 @@ export async function runSwaraChat(orgId: string, messages: SwaraTurn[], context
     } catch (error) {
       last = String(error).slice(0, 240);
       console.error(`[swara-chat] ${model} failed:`, last);
+      const keyError = geminiKeyError(error);
+      if (keyError) throw new Error(keyError);
     }
   }
   throw new Error("Swara's model is unavailable right now. Your workspace is unchanged — retry.");

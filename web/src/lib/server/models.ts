@@ -15,3 +15,18 @@ const primary = process.env.GEMINI_TEXT_MODEL?.trim() || "gemini-3.5-flash";
 const backup = "gemini-3.5-flash-lite";
 
 export const TEXT_MODELS = primary === backup ? [primary] : [primary, backup];
+
+/**
+ * A rejected key fails the same way on every model. Callers should stop
+ * retrying and say so, instead of reporting that the model is merely down.
+ */
+export function geminiKeyError(error: unknown): string | null {
+  const text = String(error);
+  if (/reported as leaked/i.test(text)) {
+    return "The Gemini API key was rejected because Google marked it as leaked. Put a new key in GEMINI_API_KEY (web/.env.local) and restart the server. Nothing was changed.";
+  }
+  if (/API_KEY_INVALID|API key not valid/i.test(text)) {
+    return "The Gemini API key was rejected. Check GEMINI_API_KEY in web/.env.local and restart the server. Nothing was changed.";
+  }
+  return null;
+}

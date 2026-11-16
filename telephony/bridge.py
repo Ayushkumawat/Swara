@@ -58,6 +58,9 @@ PLIVO_AUTH_TOKEN = os.getenv("PLIVO_AUTH_TOKEN", "")
 PLIVO_FROM_NUMBER = os.getenv("PLIVO_FROM_NUMBER", "")
 # https://<your-ngrok>.ngrok.app — Plivo must reach this from the internet.
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")
+# Host Plivo actually reached us on. Wins over PUBLIC_URL when that env value
+# still points at a tunnel that has gone away.
+SEEN_PUBLIC_URL = ""
 CONSOLE_URL = os.getenv("CONSOLE_URL", "http://127.0.0.1:3000").rstrip("/")
 SHARED_SECRET = os.getenv("TELEPHONY_SHARED_SECRET", "")
 PORT = int(os.getenv("PORT", "5000"))
@@ -196,7 +199,54 @@ def _request_public_base() -> str | None:
     if not host or host.startswith(("127.", "localhost", "0.0.0.0")):
         return None
     proto = request.headers.get("X-Forwarded-Proto", request.scheme) or "https"
-    return f"{proto}://{host}"
+    base = f"{proto}://{host}".rstrip("/")
+    global SEEN_PUBLIC_URL
+    SEEN_PUBLIC_URL = base
+    return base
+
+
+_ngrok_cache: tuple[float, str] | None = None
+_stale_warned = False
+
+
+def _ngrok_public_url() -> str:
+    """Live https tunnel from ngrok's local API. Empty when ngrok is not running."""
+    global _ngrok_cache
+    now = time.monotonic()
+    if _ngrok_cache is not None and now - _ngrok_cache[0] < 5:
+        return _ngrok_cache[1]
+    found = ""
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=0.8) as resp:
+            data = json.loads(resp.read().decode())
+        https = [
+            t
+            for t in (data.get("tunnels") or [])
+            if str(t.get("public_url", "")).startswith("https://")
+        ]
+        for tunnel in https:
+            addr = str((tunnel.get("config") or {}).get("addr") or "")
+            if addr.endswith(f":{PORT}"):
+                found = str(tunnel["public_url"]).rstrip("/")
+                break
+        if not found and https:
+            found = str(https[0]["public_url"]).rstrip("/")
+    except Exception:  # noqa: BLE001
+        found = ""
+    _ngrok_cache = (now, found)
+    return found
+
+
+def _reachable_base() -> str:
+    """Where Plivo can reach this process. A stale PUBLIC_URL must not win."""
+    global _stale_warned
+    live = _ngrok_public_url() or SEEN_PUBLIC_URL
+    if live and PUBLIC_URL and live != PUBLIC_URL and not _stale_warned:
+        _stale_warned = True
+        log(f"PUBLIC_URL {PUBLIC_URL} is stale; using {live}")
+    return live or PUBLIC_URL
 
 
 def _public_ws(path: str, *, prefer_request: bool = False) -> str:
@@ -211,8 +261,11 @@ def _public_ws(path: str, *, prefer_request: bool = False) -> str:
 
 
 def _public_http(path: str) -> str:
-    if PUBLIC_URL:
-        return PUBLIC_URL + path
+    # /dial arrives from localhost, so the request host is useless there.
+    # A Plivo webhook's own host is the one that just worked.
+    base = _request_public_base() or _reachable_base()
+    if base:
+        return base + path
     return f"{request.scheme}://{request.host}{path}"
 
 
@@ -395,7 +448,7 @@ async def dial() -> Response:
             kwargs["machine_detection_method"] = "POST"
         made = await asyncio.to_thread(client.calls.create, **kwargs)
         uuid = getattr(made, "request_uuid", None) or getattr(made, "message", None)
-        log(f"dial → {to} agent={agent_id} request={uuid}")
+        log(f"dial → {to} agent={agent_id} request={uuid} via {answer_url.split('/plivo/')[0]}")
         return Response(json.dumps({"ok": True, "requestUuid": str(uuid)}), mimetype="application/json")
     except Exception as exc:  # noqa: BLE001
         PENDING_DIALS.pop(token, None)
@@ -882,7 +935,7 @@ async def transfer_after_drain(call: Call, plivo_ws: Any, control: dict[str, Any
 
 
 def _public_http_abs(path: str) -> str:
-    return (PUBLIC_URL or f"http://127.0.0.1:{PORT}") + path
+    return (_reachable_base() or f"http://127.0.0.1:{PORT}") + path
 
 
 async def hangup_leg(call: Call) -> None:

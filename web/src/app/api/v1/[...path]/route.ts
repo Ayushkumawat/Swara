@@ -174,12 +174,17 @@ const PlaybookBody = z.object({
     .optional(),
 });
 const PlanBody = z.object({
-  brief: z.string().max(4000).default(""),
-  answers: z.record(z.string(), z.string()).optional(),
+  brief: z.string().max(100_000, "That brief is too long. Keep it under 100,000 characters — nothing was changed.").default(""),
+  answers: z.record(z.string().max(2_000), z.string().max(20_000)).optional(),
 });
 const SwaraChatBody = z.object({
   messages: z
-    .array(z.object({ role: z.enum(["user", "model"]), text: z.string().max(8000) }))
+    .array(
+      z.object({
+        role: z.enum(["user", "model"]),
+        text: z.string().max(100_000, "That message is too long. Shorten it and retry — nothing was changed."),
+      }),
+    )
     .min(1)
     .max(40),
   context: z
@@ -402,7 +407,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
 
   if (key === "swara/chat") {
     const parsed = SwaraChatBody.safeParse(body);
-    if (!parsed.success) return json({ error: "Send at least one message" }, 400);
+    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Send at least one message" }, 400);
     try {
       return json(await runSwaraChat(orgId, parsed.data.messages, parsed.data.context));
     } catch (error) {
@@ -414,7 +419,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
   // the owner applies it.
   if (key === "agents/plan") {
     const parsed = PlanBody.safeParse(body);
-    if (!parsed.success) return json({ error: "Invalid brief" }, 400);
+    if (!parsed.success) return json({ error: parsed.error.issues[0]?.message ?? "Invalid brief" }, 400);
     try {
       return json(await planAgents(user.orgId, parsed.data));
     } catch (error) {

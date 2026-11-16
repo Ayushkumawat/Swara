@@ -8,7 +8,7 @@ import { ingestKnowledgeDoc } from "./ai";
 import { AGENT_LANGUAGES, FIRST_NAMES, buildRolePrompt, defaultVoiceFor, guessGender, toolsForRole } from "@/lib/agents/role";
 import { VOICE_CATALOG } from "@/lib/live/voices";
 import { appointmentTypes, playbook, setupStatus, teams, transferTargets } from "./workspace";
-import { TEXT_MODELS } from "./models";
+import { geminiKeyError, TEXT_MODELS } from "./models";
 import { HUMAN_MODES, canConnectLive, informsAfterCall, type HumanMode } from "@/lib/agents/human-mode";
 
 /**
@@ -277,6 +277,8 @@ async function geminiShape(brief: string, ctx: PlanContext): Promise<(Shape & { 
       };
     } catch (error) {
       console.error(`[planner] ${model} failed:`, String(error).slice(0, 200));
+      const keyError = geminiKeyError(error);
+      if (keyError) throw new Error(keyError);
     }
   }
   return null;

@@ -185,9 +185,9 @@ Use this to confirm no screen above is missing something the market already offe
 - A/B script/voice testing with live outcome comparison (Voice Studio) — from marketing/growth tooling
 - Voice biometric verification + fraud/spam detection (Numbers & SIP) — from banking security/SOC dashboards
 - Cost-per-call transparency (Analytics) — from cloud infra billing dashboards
-- Cross-call customer memory (Customer 360) — original addition, not seen in any competitor researched
+  - Cross-call customer memory (Customer 360) — original addition, not seen in any competitor researched
 
----
+  ---
 
 ## 6. Build order recommendation (given solo founder + few-weeks MVP timeline)
 
